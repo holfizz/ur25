@@ -1,4 +1,3 @@
-import { faker } from '@faker-js/faker'
 import {
 	BadRequestException,
 	ForbiddenException,
@@ -33,10 +32,11 @@ export class AuthService {
 		const user = await this.prisma.user.create({
 			data: {
 				email: dto.email,
-				name: faker.person.firstName(),
-				phone: faker.phone.number('+7 (###) ###-##-##'),
+				name: dto.name,
+				phone: dto.phone,
+				address: dto.address,
 				password: await bcrypt.hash(dto.password, 5),
-				role: 'BUYER',
+				role: dto.role || 'BUYER',
 				isVerified: false,
 			},
 		})

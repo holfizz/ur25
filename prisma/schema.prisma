@@ -44,50 +44,44 @@ model User {
 
   email      String  @unique
   password   String
-  name       String  @unique // название организации
+  name       String  @unique
   phone      String?
   telegramId String? @unique @map("telegram_id")
 
-  // Новые поля
-  address   String? // адрес фермы размещения скота
-  buyerType BuyerType? // тип покупателя
+  address   String?
+  buyerType BuyerType?
 
-  role    Role    @default(BUYER)
-  isAdmin Boolean @default(false) @map("is_admin")
-
-  // Подписка на уведомления
-  notificationsEnabled Boolean @default(false) @map("notifications_enabled")
-
-  // Связи с другими моделями
-  requests Request[]
-  Offer    Offer[]
+  role                 Role      @default(BUYER)
+  isAdmin              Boolean   @default(false) @map("is_admin")
+  notificationsEnabled Boolean   @default(false) @map("notifications_enabled")
+  requests             Request[]
+  Offer                Offer[]
 
   sentMessages     Message[] @relation("SentMessages")
   receivedMessages Message[] @relation("ReceivedMessages")
 
-  isVerified Boolean @default(false) // Добавляем поле верификации
+  isVerified Boolean @default(false)
 
   @@map("users")
 }
 
-// Новая модель для запросов на покупку
 model Request {
   id        Int       @id @default(autoincrement())
-  breed     String // Порода
-  quantity  Int // Количество голов
-  weight    Float // Вес
-  age       Int // Возраст в месяцах
-  deadline  DateTime // Срок покупки
-  purpose   Purpose // Цель покупки
-  maxPrice  Float? // Максимальная цена
-  status    String    @default("ACTIVE") // ACTIVE, MATCHED, COMPLETED
-  location  String // Местоположение доставки
+  breed     String
+  quantity  Int
+  weight    Float
+  age       Int
+  deadline  DateTime
+  purpose   Purpose
+  maxPrice  Float?
+  status    String    @default("ACTIVE")
+  location  String
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
-  userId    String // Покупатель (изменили тип на String)
+  userId    String
   user      User      @relation(fields: [userId], references: [id])
-  matches   Match[] // Подходящие предложения
-  messages  Message[] // Сообщения по запросу
+  matches   Match[]
+  messages  Message[]
 
   @@map("requests")
 }

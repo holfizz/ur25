@@ -1,3 +1,4 @@
+import { PrismaService } from '@/prisma.service'
 import { Ctx, On, Start, Update } from 'nestjs-telegraf'
 import { Context } from 'telegraf'
 import { Message } from 'telegraf/typings/core/types/typegram'
@@ -5,13 +6,14 @@ import { TelegramService } from './telegram.service'
 
 @Update()
 export class TelegramUpdate {
-	constructor(private readonly telegramService: TelegramService) {}
+	constructor(
+		private readonly telegramService: TelegramService,
+		private readonly prisma: PrismaService,
+	) {}
 
 	@Start()
 	async start(@Ctx() ctx: Context) {
-		const chatId = ctx.message.chat.id.toString()
-		const telegramId = ctx.message.from.id.toString()
-		await this.telegramService.handleStart(telegramId, chatId)
+		await this.telegramService.handleStart(ctx)
 	}
 
 	@On('text')
@@ -20,15 +22,16 @@ export class TelegramUpdate {
 		if (!message?.text) return
 
 		const userId = ctx.from.id
-		const registrationState = this.telegramService.getRegistrationState(userId)
+		const user = await this.prisma.user.findUnique({
+			where: { telegramId: userId.toString() },
+		})
 
-		if (registrationState) {
-			// Если пользователь в процессе регистрации, передаем управление в сервис
+		if (!user?.isVerified) {
 			await this.telegramService.handleRegistrationFlow(ctx, message.text)
 			return
 		}
 
-		// Здесь обработка обычных текстовых сообщений
-		await ctx.reply(`Получено сообщение: ${message.text}`)
+		// Обработка текстового ввода для редактирования
+		await this.telegramService.handleTextInput(ctx, message.text)
 	}
 }

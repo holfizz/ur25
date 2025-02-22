@@ -7,12 +7,6 @@ async function bootstrap() {
 	const app = await NestFactory.create(AppModule)
 
 	app.setGlobalPrefix('api')
-
-	// Добавляем глобальный обработчик исключений
-	process.on('unhandledRejection', (reason, promise) => {
-		console.error('Unhandled Rejection at:', promise, 'reason:', reason)
-	})
-
 	app.useGlobalPipes(new ValidationPipe())
 
 	app.enableCors()
