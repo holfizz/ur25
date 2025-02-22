@@ -1,0 +1,162 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  BUYER
+  SUPPLIER
+  CARRIER
+  ADMIN
+}
+
+enum BuyerType {
+  PRIVATE // Частное лицо
+  FARM // КФХ
+  AGRICULTURAL // с/х предприятие
+  MEAT_FACTORY // мясокомбинат
+  FEEDLOT // откормочная площадка
+  GRANT_MEMBER // участник гранта
+}
+
+enum Purpose {
+  MEAT // Мясо
+  BREEDING // Разведение
+  DAIRY // Молочное производство
+  FATTENING // Откорм
+}
+
+enum AgeGroup {
+  CALF // Телята
+  YOUNG // Молодняк
+  ADULT // Взрослые
+  HEIFER // Нетели
+}
+
+model User {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  email      String  @unique
+  password   String
+  name       String  @unique // название организации
+  phone      String?
+  telegramId String? @unique @map("telegram_id")
+
+  // Новые поля
+  address   String? // адрес фермы размещения скота
+  buyerType BuyerType? // тип покупателя
+
+  role    Role    @default(BUYER)
+  isAdmin Boolean @default(false) @map("is_admin")
+
+  // Подписка на уведомления
+  notificationsEnabled Boolean @default(false) @map("notifications_enabled")
+
+  // Связи с другими моделями
+  requests Request[]
+  Offer    Offer[]
+
+  sentMessages     Message[] @relation("SentMessages")
+  receivedMessages Message[] @relation("ReceivedMessages")
+
+  isVerified Boolean @default(false) // Добавляем поле верификации
+
+  @@map("users")
+}
+
+// Новая модель для запросов на покупку
+model Request {
+  id        Int       @id @default(autoincrement())
+  breed     String // Порода
+  quantity  Int // Количество голов
+  weight    Float // Вес
+  age       Int // Возраст в месяцах
+  deadline  DateTime // Срок покупки
+  purpose   Purpose // Цель покупки
+  maxPrice  Float? // Максимальная цена
+  status    String    @default("ACTIVE") // ACTIVE, MATCHED, COMPLETED
+  location  String // Местоположение доставки
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  userId    String // Покупатель (изменили тип на String)
+  user      User      @relation(fields: [userId], references: [id])
+  matches   Match[] // Подходящие предложения
+  messages  Message[] // Сообщения по запросу
+
+  @@map("requests")
+}
+
+model Offer {
+  id          String   @id @default(uuid())
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  title       String
+  description String
+  price       Float
+  quantity    Int
+  breed       String
+  age         Int
+  weight      Float
+  location    String
+  status      String   @default("ACTIVE") // Добавляем поле status
+
+  // Связь с пользователем (поставщиком)
+  userId String
+  user   User   @relation(fields: [userId], references: [id])
+
+  // Связь с фотографиями
+  images Image[]
+
+  matches Match[]
+
+  @@map("offers")
+}
+
+model Image {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  url String
+  key String // Ключ в S3
+
+  // Связь с объявлением
+  offerId String
+  offer   Offer  @relation(fields: [offerId], references: [id])
+
+  @@map("images")
+}
+
+model Match {
+  id        Int       @id @default(autoincrement())
+  requestId Int
+  offerId   String // Изменили тип на String, так как id в Offer - String
+  status    String    @default("PENDING") // PENDING, ACCEPTED, REJECTED
+  request   Request   @relation(fields: [requestId], references: [id])
+  offer     Offer     @relation(fields: [offerId], references: [id])
+  messages  Message[] // Сообщения по совпадению
+
+  @@map("matches")
+}
+
+model Message {
+  id        Int      @id @default(autoincrement())
+  content   String
+  fromUser  User     @relation("SentMessages", fields: [fromId], references: [id])
+  fromId    String // Изменили тип на String, так как id в User - String
+  toUser    User     @relation("ReceivedMessages", fields: [toId], references: [id])
+  toId      String // Изменили тип на String, так как id в User - String
+  requestId Int?
+  request   Request? @relation(fields: [requestId], references: [id])
+  matchId   Int?
+  match     Match?   @relation(fields: [matchId], references: [id])
+  createdAt DateTime @default(now())
+
+  @@map("messages")
+}
