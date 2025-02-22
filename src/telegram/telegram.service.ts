@@ -2,7 +2,8 @@ import { Injectable } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import { Role } from '@prisma/client'
 import * as bcrypt from 'bcrypt'
-import { Context } from 'telegraf'
+import { Action } from 'nestjs-telegraf'
+import { Context, Telegraf } from 'telegraf'
 import { CallbackQuery } from 'telegraf/typings/core/types/typegram'
 import { PrismaService } from '../prisma.service'
 import { TelegramServiceClient } from './telegram.service.client'
@@ -21,12 +22,15 @@ interface RegistrationState {
 export class TelegramService {
 	private registrationStates: Map<number, any> = new Map() // Храним состояние регистрации
 	private editStates: Map<number, { field: string }> = new Map() // Храним состояние редактирования
+	private telegramClient: Telegraf
 
 	constructor(
 		private readonly prisma: PrismaService,
 		private readonly configService: ConfigService,
-		private readonly telegramClient: TelegramServiceClient,
-	) {}
+		private readonly telegramServiceClient: TelegramServiceClient,
+	) {
+		this.telegramClient = new Telegraf(process.env.TELEGRAM_BOT_TOKEN)
+	}
 
 	public async handleStart(ctx: Context) {
 		const userId = ctx.from.id
@@ -49,20 +53,23 @@ export class TelegramService {
 					},
 				},
 			)
-		} else {
-			await ctx.reply(
-				`👤 Ваш профиль:\n\n` +
-					`📝 Название: ${user.name}\n` +
-					`📧 Email: ${user.email}\n` +
-					`📱 Телефон: ${user.phone}\n` +
-					`📍 Адрес: ${user.address}\n` +
-					`📦 Роль: ${this.getRoleInRussian(user.role)}\n`,
-			)
+			return
 		}
+
+		if (!user.isVerified) {
+			await ctx.reply(
+				'❌ Ваш аккаунт еще не верифицирован.\n' +
+					'Пожалуйста, дождитесь подтверждения от администратора.',
+			)
+			return
+		}
+
+		// Показываем профиль только если пользователь верифицирован
+		await this.showProfile(ctx)
 	}
 
 	async handleMenu(ctx: Context) {
-		await ctx.reply('Главное меню\n\nВыберите нужное действие:', {
+		await ctx.reply('📱 Главное меню\n\nВыберите нужное действие:', {
 			reply_markup: {
 				inline_keyboard: [
 					[
@@ -193,13 +200,28 @@ export class TelegramService {
 	public async handleRegistrationFlow(ctx: Context, text: string) {
 		const userId = ctx.from.id
 
-		// Проверяем, если пользователь уже зарегистрирован и ожидает подтверждения
+		// Проверяем, если пользователь уже зарегистрирован
 		const user = await this.prisma.user.findUnique({
 			where: { telegramId: userId.toString() },
 		})
 
-		if (user && user.isVerified) {
-			await ctx.reply('❌ Вы уже зарегистрированы и подтверждены.')
+		if (user) {
+			if (user.isVerified) {
+				await ctx.reply(
+					'❌ Вы уже зарегистрированы и подтверждены.\n' +
+						'Используйте кнопку "Войти" для входа в аккаунт.',
+					{
+						reply_markup: {
+							inline_keyboard: [[{ text: '🔑 Войти', callback_data: 'login' }]],
+						},
+					},
+				)
+			} else {
+				await ctx.reply(
+					'❌ Вы уже зарегистрированы.\n' +
+						'Пожалуйста, дождитесь подтверждения от администратора.',
+				)
+			}
 			return
 		}
 
@@ -369,56 +391,22 @@ export class TelegramService {
 				return
 			}
 
-			// Определяем тип для объекта обновления
-			const updateData: {
-				phone?: string
-				password?: string
-				name?: string
-				address?: string
-			} = {}
-			let isValid = true
-			let errorMessage = ''
+			if (editState.field === 'password') {
+				const isValidPassword = await bcrypt.compare(text, user.password)
+				if (!isValidPassword) {
+					await ctx.reply('❌ Неверный пароль! Попробуйте еще раз.')
+					return
+				}
 
-			switch (editState.field) {
-				case 'phone':
-					if (!this.validatePhone(text)) {
-						isValid = false
-						errorMessage = '❌ Неверный формат телефона. Пример: +79991234567'
-					} else {
-						updateData.phone = text
-					}
-					break
-				case 'password':
-					if (!this.validatePassword(text)) {
-						isValid = false
-						errorMessage =
-							'❌ Пароль должен содержать минимум 6 символов, включая буквы и цифры.'
-					} else {
-						updateData.password = await bcrypt.hash(text, 10) // Хешируем пароль
-					}
-					break
-				case 'name':
-					updateData.name = text
-					break
-				case 'address':
-					updateData.address = text
-					break
-			}
-
-			if (isValid) {
-				await this.prisma.user.update({
-					where: { id: user.id },
-					data: updateData,
-				})
-
-				await ctx.reply('✅ Данные успешно обновлены!')
-				await this.showProfile(ctx)
-			} else {
-				await ctx.reply(errorMessage)
+				await ctx.reply('✅ Вы успешно вошли в систему!')
+				await this.showProfile(ctx) // Показываем профиль после успешного входа
+				this.editStates.delete(userId) // Удаляем состояние редактирования
 			}
 		} catch (error) {
-			console.error('Ошибка при обновлении данных:', error)
-			await ctx.reply('❌ Произошла ошибка при обновлении данных')
+			console.error('Ошибка при обработке входа:', error)
+			await ctx.reply(
+				'❌ Произошла ошибка при входе. Пожалуйста, попробуйте еще раз.',
+			)
 		}
 	}
 
@@ -430,5 +418,60 @@ export class TelegramService {
 	private validatePassword(password: string): boolean {
 		const passwordRegex = /^(?=.*[A-Za-z])(?=.*\d)[A-Za-z\d]{6,}$/ // Минимум 6 символов, буквы и цифры
 		return passwordRegex.test(password)
+	}
+
+	public async sendVerificationNotification(telegramId: string) {
+		await this.telegramClient.telegram.sendMessage(
+			telegramId,
+			'✅ Ваш аккаунт успешно верифицирован!\nТеперь вы можете продолжить использовать систему.',
+			{
+				reply_markup: {
+					inline_keyboard: [
+						[{ text: '➡️ Перейти в меню', callback_data: 'menu' }],
+					],
+				},
+			},
+		)
+	}
+
+	@Action('login')
+	async handleLoginAction(ctx: Context) {
+		const userId = ctx.from.id
+		const user = await this.prisma.user.findUnique({
+			where: { telegramId: userId.toString() },
+		})
+
+		if (!user) {
+			await ctx.reply(
+				'❌ Пользователь не найден.\nПожалуйста, сначала зарегистрируйтесь.',
+				{
+					reply_markup: {
+						inline_keyboard: [
+							[{ text: '📝 Регистрация', callback_data: 'register' }],
+						],
+					},
+				},
+			)
+			return
+		}
+
+		if (!user.isVerified) {
+			await ctx.reply(
+				'❌ Ваш аккаунт еще не верифицирован.\nПожалуйста, дождитесь подтверждения от администратора.',
+			)
+			return
+		}
+
+		// Показываем профиль и меню
+		await this.showProfile(ctx)
+		await this.handleMenu(ctx)
+	}
+
+	public clearEditState(userId: number) {
+		this.editStates.delete(userId)
+	}
+
+	public clearRegistrationState(userId: number) {
+		this.registrationStates.delete(userId)
 	}
 }

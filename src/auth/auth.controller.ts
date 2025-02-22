@@ -13,6 +13,7 @@ import {
 	UsePipes,
 	ValidationPipe,
 } from '@nestjs/common'
+import { TelegramService } from '../telegram/telegram.service'
 import { AuthService } from './auth.service'
 import { AuthDto } from './dto/auth.dto'
 import { RefreshTokenDto } from './dto/refreshToken.dto'
@@ -24,6 +25,7 @@ export class AuthController {
 		private readonly authService: AuthService,
 		private readonly mailService: MailService,
 		private readonly prisma: PrismaService,
+		private readonly telegramService: TelegramService,
 	) {}
 
 	@UsePipes(new ValidationPipe())
@@ -59,6 +61,11 @@ export class AuthController {
 
 			// Отправляем email с уведомлением
 			await this.mailService.sendVerificationEmail(user.email)
+
+			// Отправляем уведомление в Telegram
+			if (user.telegramId) {
+				await this.telegramService.sendVerificationNotification(user.telegramId)
+			}
 
 			return {
 				success: true,

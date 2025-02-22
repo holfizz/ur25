@@ -1,3 +1,5 @@
+import { TelegramService } from '@/telegram/telegram.service'
+import { TelegramServiceClient } from '@/telegram/telegram.service.client'
 import { MailerModule } from '@nestjs-modules/mailer'
 import { HandlebarsAdapter } from '@nestjs-modules/mailer/dist/adapters/handlebars.adapter'
 import { Module } from '@nestjs/common'
@@ -56,6 +58,8 @@ import { MailService } from './mail.service'
 		ConfigService,
 		UserService,
 		MailService,
+		TelegramService,
+		TelegramServiceClient,
 	],
 })
 export class AuthModule {}
