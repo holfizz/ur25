@@ -13,12 +13,13 @@ import {
 	UsePipes,
 	ValidationPipe,
 } from '@nestjs/common'
+import { ApiResponse, ApiTags } from '@nestjs/swagger'
 import { TelegramService } from '../telegram/telegram.service'
 import { AuthService } from './auth.service'
-import { AuthDto } from './dto/auth.dto'
 import { RefreshTokenDto } from './dto/refreshToken.dto'
 import { MailService } from './mail.service'
 
+@ApiTags('auth')
 @Controller('auth')
 export class AuthController {
 	constructor(
@@ -31,15 +32,17 @@ export class AuthController {
 	@UsePipes(new ValidationPipe())
 	@HttpCode(200)
 	@Post('register')
-	async register(@Body() dto: AuthDto) {
-		return this.authService.register(dto)
+	async register(@Body() registerDto: any) {
+		return this.authService.register(registerDto)
 	}
 
 	@UsePipes(new ValidationPipe())
 	@HttpCode(200)
 	@Post('login')
-	async login(@Body() dto: AuthDto) {
-		return this.authService.login(dto)
+	@ApiResponse({ status: 200, description: 'Успешный вход.' })
+	@ApiResponse({ status: 404, description: 'Пользователь не найден.' })
+	async login(@Body() loginDto: { email: string; password: string }) {
+		return this.authService.login(loginDto)
 	}
 
 	@UsePipes(new ValidationPipe())

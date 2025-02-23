@@ -44,23 +44,32 @@ model User {
 
   email      String  @unique
   password   String
-  name       String  @unique
+  name       String
   phone      String?
-  telegramId String? @unique @map("telegram_id")
+  telegramId String? @unique
 
   address   String?
   buyerType BuyerType?
 
-  role                 Role      @default(BUYER)
+  role                 Role
   isAdmin              Boolean   @default(false) @map("is_admin")
   notificationsEnabled Boolean   @default(false) @map("notifications_enabled")
   requests             Request[]
-  Offer                Offer[]
+  offers               Offer[]
 
   sentMessages     Message[] @relation("SentMessages")
   receivedMessages Message[] @relation("ReceivedMessages")
 
   isVerified Boolean @default(false)
+
+  // Добавляем новые поля
+  inn           String? // ИНН
+  ogrn          String? // ОГРН
+  mercuryNumber String? // Номер в системе "Меркурий"
+  contactName   String? // ФИО ответственного лица
+  contactPhone  String? // Телефон ответственного лица
+
+  location String? // Добавляем поле для адреса фермы
 
   @@map("users")
 }
@@ -153,4 +162,20 @@ model Message {
   createdAt DateTime @default(now())
 
   @@map("messages")
+}
+
+model RegistrationRequest {
+  id            String   @id @default(uuid())
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  email         String
+  name          String
+  phone         String
+  address       String
+  inn           String
+  ogrn          String? // Делаем опциональным
+  mercuryNumber String? // Делаем опциональным
+  role          Role
+  userType      String
+  isProcessed   Boolean  @default(false)
 }

@@ -288,7 +288,7 @@ ${
 		const user = await this.prisma.user.findUnique({
 			where: { telegramId: userId.toString() },
 			include: {
-				Offer: {
+				offers: {
 					include: {
 						matches: {
 							include: {
@@ -304,7 +304,7 @@ ${
 			},
 		})
 
-		if (!user.Offer.length) {
+		if (!user.offers.length) {
 			await ctx.reply(
 				'❌ У вас пока нет запросов на покупку.\n\nИспользуйте команду /request для создания нового запроса.',
 				Markup.inlineKeyboard([
@@ -315,7 +315,7 @@ ${
 		}
 
 		// Создаем кнопки для каждого запроса
-		const buttons = user.Offer.map((req, index) => [
+		const buttons = user.offers.map((req, index) => [
 			Markup.button.callback(
 				`${index + 1}. ${req.breed} (${req.matches.length} предложений)`,
 				`view_request_${req.id}`,
@@ -402,6 +402,11 @@ ${
 			},
 		})
 
+		if (!offer) {
+			await ctx.reply('❌ Объявление не найдено.')
+			return
+		}
+
 		const offerDetails = `
 📦 <b>Предложение от ${offer.user.name}</b>
 
@@ -465,7 +470,7 @@ ${
 		const user = await this.prisma.user.findUnique({
 			where: { telegramId: userId.toString() },
 			include: {
-				Offer: {
+				offers: {
 					include: {
 						matches: {
 							include: {
@@ -481,7 +486,7 @@ ${
 			},
 		})
 
-		const activeMatches = user.Offer.flatMap(offer =>
+		const activeMatches = user.offers.flatMap(offer =>
 			offer.matches.filter(match => match.status === 'PENDING'),
 		)
 

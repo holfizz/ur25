@@ -72,13 +72,24 @@ export class AuthService {
 		}
 	}
 
-	async login(dto: AuthDto) {
-		const user = await this.validateUser(dto)
-		const tokens = await this.issueTokens(user.id)
-		return {
-			user: this.returnUserFields(user),
-			...tokens,
+	async login(loginDto: { email: string; password: string }) {
+		const user = await this.prisma.user.findUnique({
+			where: { email: loginDto.email },
+		})
+
+		if (!user) {
+			throw new NotFoundException('User not found')
 		}
+
+		const isPasswordValid = await bcrypt.compare(
+			loginDto.password,
+			user.password,
+		)
+		if (!isPasswordValid) {
+			throw new UnauthorizedException('Invalid password')
+		}
+
+		return { success: true, user }
 	}
 
 	async getNewTokens(refreshToken: string) {

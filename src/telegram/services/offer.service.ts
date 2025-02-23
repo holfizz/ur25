@@ -2,7 +2,7 @@
 import { Injectable } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import fetch from 'node-fetch'
-import { Markup } from 'telegraf'
+import { Context, Markup } from 'telegraf'
 import { S3Service } from '../../common/services/s3.service'
 import { PrismaService } from '../../prisma.service'
 
@@ -325,7 +325,7 @@ ${offer.images.map(img => img.url).join('\n')}`,
 		const user = await this.prisma.user.findUnique({
 			where: { telegramId: userId.toString() },
 			include: {
-				Offer: {
+				offers: {
 					include: {
 						images: true,
 						matches: true,
@@ -337,7 +337,7 @@ ${offer.images.map(img => img.url).join('\n')}`,
 			},
 		})
 
-		if (!user.Offer.length) {
+		if (!user.offers.length) {
 			await ctx.reply(
 				'❌ У вас пока нет объявлений.\n\nИспользуйте команду /create_offer для создания нового объявления.',
 				Markup.inlineKeyboard([
@@ -347,8 +347,9 @@ ${offer.images.map(img => img.url).join('\n')}`,
 			return
 		}
 
-		const offersList = user.Offer.map(
-			(offer, index) => `
+		const offersList = user.offers
+			.map(
+				(offer, index) => `
 ${index + 1}. <b>${offer.title}</b>
 🔢 ${offer.quantity} голов
 ⚖️ ${offer.weight} кг
@@ -360,7 +361,8 @@ ${
 		? `✅ Заявок: ${offer.matches.length}`
 		: '⏳ Ожидание заявок...'
 }`,
-		).join('\n\n')
+			)
+			.join('\n\n')
 
 		await ctx.reply(`📋 <b>Ваши объявления:</b>\n${offersList}`, {
 			parse_mode: 'HTML',
@@ -519,5 +521,58 @@ ${offer.description || 'Описание отсутствует'}`
 				]),
 			})
 		}
+	}
+
+	async showMyOffers(ctx: Context) {
+		const userId = ctx.from.id
+		const user = await this.prisma.user.findUnique({
+			where: { telegramId: userId.toString() },
+			include: {
+				offers: {
+					include: {
+						images: true,
+						matches: true,
+					},
+					orderBy: {
+						createdAt: 'desc',
+					},
+				},
+			},
+		})
+
+		if (!user.offers.length) {
+			await ctx.reply(
+				'❌ У вас пока нет объявлений.\n\nИспользуйте команду /create_offer для создания нового объявления.',
+				Markup.inlineKeyboard([
+					[Markup.button.callback('📝 Создать объявление', 'create_offer')],
+				]),
+			)
+			return
+		}
+
+		const offersList = user.offers
+			.map(
+				(offer, index) => `
+${index + 1}. <b>${offer.title}</b>
+🔢 ${offer.quantity} голов
+⚖️ ${offer.weight} кг
+🌱 ${offer.age} мес.
+💰 ${offer.price} ₽/гол
+📍 ${offer.location}
+${
+	offer.matches.length > 0
+		? `✅ Заявок: ${offer.matches.length}`
+		: '⏳ Ожидание заявок...'
+}`,
+			)
+			.join('\n\n')
+
+		await ctx.reply(`📋 <b>Ваши объявления:</b>\n${offersList}`, {
+			parse_mode: 'HTML',
+			...Markup.inlineKeyboard([
+				[Markup.button.callback('📝 Создать новое объявление', 'create_offer')],
+				[Markup.button.callback('« Назад', 'menu')],
+			]),
+		})
 	}
 }

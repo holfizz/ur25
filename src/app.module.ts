@@ -10,10 +10,9 @@ import { UserModule } from './user/user.module'
 @Module({
 	imports: [
 		ConfigModule.forRoot({
-			envFilePath: '.env',
 			isGlobal: true,
+			envFilePath: '.env',
 		}),
-		ConfigModule.forRoot(),
 		AuthModule,
 		UserModule,
 		TelegramModule,

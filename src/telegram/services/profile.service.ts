@@ -2,7 +2,7 @@
 import { PrismaService } from '@/prisma.service'
 import { Injectable } from '@nestjs/common'
 import { BuyerType, Role } from '@prisma/client'
-import { Markup } from 'telegraf'
+import { Context, Markup } from 'telegraf'
 
 @Injectable()
 export class TelegramProfileService {
@@ -257,5 +257,54 @@ ${
 			GRANT_MEMBER: 'Участник гранта',
 		}
 		return types[type] || type
+	}
+
+	async showProfile(ctx: Context) {
+		const userId = ctx.from.id
+		const user = await this.prisma.user.findUnique({
+			where: { telegramId: userId.toString() },
+		})
+
+		if (!user) {
+			await ctx.reply('❌ Пользователь не найден')
+			return
+		}
+
+		const profileText = `
+👤 <b>Ваш профиль:</b>
+
+📝 Название: ${user.name}
+📧 Email: ${user.email}
+📱 Телефон: ${user.phone || 'Не указан'}
+📍 Адрес: ${user.address || 'Не указан'}
+${this.getRoleEmoji(user.role)} Роль: ${this.getRoleText(user.role)}
+🔔 Уведомления: ${user.notificationsEnabled ? 'Включены' : 'Отключены'}
+
+Выберите действие для редактирования:`
+
+		const buttons = [
+			[
+				Markup.button.callback('✏️ Изменить название', 'edit_name'),
+				Markup.button.callback('📱 Изменить телефон', 'edit_phone'),
+			],
+			[
+				Markup.button.callback('📍 Изменить адрес', 'edit_address'),
+				Markup.button.callback('🔑 Изменить пароль', 'edit_password'),
+			],
+			[
+				Markup.button.callback(
+					`${user.notificationsEnabled ? '🔕' : '🔔'} ${
+						user.notificationsEnabled ? 'Отключить' : 'Включить'
+					} уведомления`,
+					'toggle_notifications',
+				),
+			],
+			[Markup.button.callback('« Меню', 'menu')],
+		]
+
+		await ctx.reply(profileText, {
+			parse_mode: 'HTML',
+			...Markup.inlineKeyboard(buttons),
+		})
 	}
 }
