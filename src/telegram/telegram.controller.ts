@@ -1,3 +1,4 @@
+import { AuthService } from '@/auth/auth.service'
 import { Body, Controller, Post, UseGuards } from '@nestjs/common'
 import { Command, Ctx, On, Update } from 'nestjs-telegraf'
 import { Context } from 'telegraf'
@@ -14,6 +15,7 @@ export class TelegramController {
 	constructor(
 		private readonly telegramService: TelegramService,
 		private readonly offerService: OfferService,
+		private readonly authService: AuthService,
 	) {}
 
 	@Command('start')
@@ -29,6 +31,17 @@ export class TelegramController {
 	@On('text')
 	async handleMessage(@Ctx() ctx: Context) {
 		const message = ctx.message as Message.TextMessage
+		console.log('Получено сообщение:', message.text)
+
+		// Проверяем состояние входа
+		const loginState = this.authService.getLoginState(ctx.from.id)
+		console.log('Состояние входа в контроллере:', loginState)
+
+		if (loginState) {
+			await this.authService.handleLoginInput(ctx, message.text)
+			return
+		}
+
 		await this.telegramService.handleTextInput(ctx)
 	}
 

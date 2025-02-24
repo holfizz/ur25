@@ -85,14 +85,30 @@ export class TelegramUpdate {
 	@On('text')
 	async handleText(@Ctx() ctx: Context) {
 		const userId = ctx.from.id
-		const state = await this.offerService.getOfferState(userId)
 
-		if (ctx.message && 'text' in ctx.message) {
-			if (state && state.inputType === 'title') {
-				await this.offerService.handleOfferTitleInput(ctx, ctx.message.text)
-			} else {
-				await this.authService.handleTextInput(ctx, ctx.message.text)
+		// Проверяем состояние входа
+		const loginState = this.authService.getLoginState(userId)
+		console.log('Состояние входа:', loginState)
+
+		if (loginState) {
+			if (ctx.message && 'text' in ctx.message) {
+				await this.authService.handleLoginInput(ctx, ctx.message.text)
 			}
+			return
+		}
+
+		// Проверяем состояние создания предложения
+		const offerState = await this.offerService.getOfferState(userId)
+		if (offerState && ctx.message && 'text' in ctx.message) {
+			if (offerState.inputType === 'title') {
+				await this.offerService.handleOfferTitleInput(ctx, ctx.message.text)
+			}
+			return
+		}
+
+		// Если нет активных состояний, передаем управление базовому обработчику
+		if (ctx.message && 'text' in ctx.message) {
+			await this.authService.handleTextInput(ctx, ctx.message.text)
 		}
 	}
 
@@ -176,5 +192,10 @@ export class TelegramUpdate {
 				'❌ Произошла ошибка при загрузке фото. Попробуйте еще раз.',
 			)
 		}
+	}
+
+	@Action('login')
+	async handleLogin(@Ctx() ctx: Context) {
+		await this.telegramService.handleLogin(ctx)
 	}
 }

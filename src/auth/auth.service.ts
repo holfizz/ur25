@@ -8,12 +8,16 @@ import {
 import { JwtService } from '@nestjs/jwt'
 import { User } from '@prisma/client'
 import * as bcrypt from 'bcrypt'
+import { Context } from 'telegraf'
 import { PrismaService } from '../prisma.service'
 import { UserService } from '../user/user.service'
 import { AuthDto } from './dto/auth.dto'
 
 @Injectable()
 export class AuthService {
+	private loginStates: Map<number, { email?: string; password?: string }> =
+		new Map()
+
 	constructor(
 		private prisma: PrismaService,
 		private jwtService: JwtService,
@@ -125,5 +129,70 @@ export class AuthService {
 		}
 
 		return user
+	}
+
+	// Добавляем метод для получения состояния входа
+	getLoginState(userId: number) {
+		return this.loginStates.get(userId)
+	}
+
+	// Добавляем метод инициализации состояния входа
+	async initLoginState(userId: number) {
+		console.log('Инициализация состояния входа для пользователя:', userId)
+		this.loginStates.set(userId, {})
+	}
+
+	// Обновляем метод handleLoginInput
+	async handleLoginInput(ctx: Context, text: string) {
+		console.log('Вход в handleLoginInput:', text)
+		const userId = ctx.from.id
+		const loginState = this.loginStates.get(userId)
+		console.log('Текущее состояние входа:', loginState)
+
+		if (!loginState) {
+			await ctx.reply('❌ Сессия входа истекла. Пожалуйста, начните заново.')
+			return
+		}
+
+		if (!loginState.email) {
+			if (!this.validateEmail(text)) {
+				await ctx.reply('❌ Неверный формат email. Попробуйте еще раз.')
+				return
+			}
+			loginState.email = text
+			this.loginStates.set(userId, loginState)
+			console.log('Email сохранен:', loginState)
+			await ctx.reply('🔑 Введите пароль:')
+			return
+		}
+
+		if (!loginState.password) {
+			try {
+				const result = await this.login({
+					email: loginState.email,
+					password: text,
+				})
+
+				if (result.success) {
+					await ctx.reply('✅ Вход выполнен успешно!')
+					// Обновляем telegramId пользователя
+					await this.prisma.user.update({
+						where: { email: loginState.email },
+						data: { telegramId: userId.toString() },
+					})
+				} else {
+					await ctx.reply('❌ Неверный email или пароль')
+				}
+			} catch (error) {
+				await ctx.reply('❌ Неверный email или пароль')
+			} finally {
+				this.loginStates.delete(userId)
+			}
+		}
+	}
+
+	private validateEmail(email: string): boolean {
+		const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+		return emailRegex.test(email)
 	}
 }

@@ -425,6 +425,9 @@ export class TelegramAuthService {
 		})
 
 		await ctx.reply('✅ Вы успешно вышли из аккаунта')
+		await ctx.reply(
+			'Чтобы продолжить использовать бота, используйте команду /start',
+		)
 	}
 
 	async getActiveUser(userId: number) {
@@ -547,5 +550,94 @@ export class TelegramAuthService {
 		this.registrationStates.set(userId, state)
 
 		await ctx.reply('📍 Введите адрес:')
+	}
+
+	async handleLoginInput(ctx: Context, text: string) {
+		const userId = ctx.from.id
+		const loginState = this.loginStates.get(userId)
+		console.log('Обработка входа:', { userId, text, loginState })
+
+		if (!loginState) {
+			await ctx.reply('❌ Сессия входа истекла. Пожалуйста, начните заново.')
+			return
+		}
+
+		if (!loginState.email) {
+			// Проверка формата email
+			if (!this.validateEmail(text)) {
+				await ctx.reply('❌ Неверный формат email. Попробуйте еще раз.')
+				return
+			}
+
+			// Проверка существования пользователя
+			const user = await this.prisma.user.findUnique({
+				where: { email: text },
+			})
+
+			if (!user) {
+				await ctx.reply('❌ Пользователь не найден. Проверьте email.')
+				return
+			}
+
+			loginState.email = text
+			this.loginStates.set(userId, loginState)
+			await ctx.reply('🔑 Введите пароль:')
+			return
+		}
+
+		if (!loginState.password) {
+			try {
+				const user = await this.prisma.user.findUnique({
+					where: { email: loginState.email },
+				})
+
+				if (!user) {
+					throw new Error('Пользователь не найден')
+				}
+
+				const isPasswordValid = await bcrypt.compare(text, user.password)
+				if (!isPasswordValid) {
+					throw new Error('Неверный пароль')
+				}
+
+				// Обновляем telegramId пользователя
+				await this.prisma.user.update({
+					where: { email: loginState.email },
+					data: { telegramId: userId.toString() },
+				})
+
+				await ctx.reply('✅ Вход выполнен успешно!')
+
+				// Добавляем вызов меню после успешного входа
+				await ctx.reply('Выберите нужное действие:', {
+					reply_markup: {
+						inline_keyboard: [
+							[
+								{ text: '📝 Создать объявление', callback_data: 'create_ad' },
+								{ text: '📋 Мои объявления', callback_data: 'my_ads' },
+							],
+							[
+								{ text: '📱 Профиль', callback_data: 'profile' },
+								{ text: '🔑 Войти', callback_data: 'login' },
+							],
+							[
+								{ text: '❓ Помощь', callback_data: 'help' },
+								{ text: '🚪 Выйти', callback_data: 'logout' },
+							],
+							[{ text: '🏠 Главное меню', callback_data: 'menu' }],
+						],
+					},
+				})
+			} catch (error) {
+				await ctx.reply('❌ Неверный email или пароль')
+			} finally {
+				this.loginStates.delete(userId)
+			}
+		}
+	}
+
+	async initLoginState(userId: number) {
+		console.log('Инициализация состояния входа для пользователя:', userId)
+		this.loginStates.set(userId, {})
 	}
 }

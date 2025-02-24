@@ -212,20 +212,11 @@ ${
 		// Другие обработчики...
 	}
 
-	async handleRegisterCommand(ctx: Context) {
+	async handleLogin(ctx: Context) {
 		const userId = ctx.from.id
-		await this.authService.startRegistration(userId) // Инициализация состояния
-
-		await ctx.reply('❓ Выберите вашу роль для регистрации:', {
-			reply_markup: {
-				inline_keyboard: [
-					[
-						{ text: '👤 Покупатель', callback_data: 'role_buyer' },
-						{ text: '🛠️ Поставщик', callback_data: 'role_supplier' },
-						{ text: '🚚 Перевозчик', callback_data: 'role_carrier' },
-					],
-				],
-			},
-		})
+		await this.authService.initLoginState(userId)
+		await ctx.reply(
+			'📧 Введите ваш email для входа:\n\n📝 Пример: example@mail.com',
+		)
 	}
 }

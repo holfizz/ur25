@@ -1,5 +1,7 @@
+import { AuthService } from '@/auth/auth.service'
 import { S3Service } from '@/common/services/s3.service'
 import { OfferService } from '@/offer/offer.service'
+import { UserService } from '@/user/user.service'
 import { Module } from '@nestjs/common'
 import { ConfigModule, ConfigService } from '@nestjs/config'
 import { JwtModule } from '@nestjs/jwt'
@@ -51,6 +53,8 @@ const sessions = new LocalSession({ database: 'sessions.json' })
 		TelegramRequestService,
 		TelegramMessageService,
 		TelegramProfileService,
+		AuthService,
+		UserService,
 	],
 })
 export class TelegramModule {}
