@@ -114,6 +114,10 @@ model Offer {
 
   matches Match[]
 
+  mercuryNumber String?
+  contactPerson String?
+  contactPhone  String?
+
   @@map("offers")
 }
 

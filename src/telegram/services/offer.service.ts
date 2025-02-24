@@ -3,23 +3,13 @@ import { Injectable } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import fetch from 'node-fetch'
 import { Context, Markup } from 'telegraf'
+import {
+	CallbackQuery,
+	InputMediaPhoto,
+} from 'telegraf/typings/core/types/typegram'
 import { S3Service } from '../../common/services/s3.service'
 import { PrismaService } from '../../prisma.service'
 import { TelegramClient } from '../telegram.client'
-
-interface OfferState {
-	title?: string
-	description?: string
-	price?: number
-	quantity?: number
-	breed?: string
-	age?: number
-	weight?: number
-	location?: string
-	contact?: string
-	photos?: Array<{ url: string; key: string }>
-	inputType?: string
-}
 
 interface UploadedFile {
 	buffer: Buffer
@@ -28,6 +18,24 @@ interface UploadedFile {
 	fieldname: string
 	encoding: string
 	size: number
+	url?: string
+	type?: string
+}
+
+interface OfferState {
+	photos: Array<{ url: string; key: string }>
+	inputType?: string
+	title?: string
+	quantity?: number
+	weight?: number
+	age?: number
+	price?: number
+	location?: string
+	description?: string
+	mercuryNumber?: string
+	contactPerson?: string
+	contactPhone?: string
+	breed?: string
 }
 
 @Injectable()
@@ -41,208 +49,259 @@ export class TelegramOfferService {
 		private telegramClient: TelegramClient,
 	) {}
 
-	// Методы для работы с объявлениями
-	async handleCreateOffer(ctx) {
+	async handleCreateOffer(ctx: Context) {
 		const userId = ctx.from.id
+
+		// Проверяем наличие номера Меркурий у пользователя
+		const user = await this.prisma.user.findUnique({
+			where: { telegramId: userId.toString() },
+		})
+
+		if (!user?.mercuryNumber) {
+			// Если номера нет, запрашиваем его
+			this.offerStates.set(userId, { photos: [], inputType: 'mercury_number' })
+			await ctx.reply(
+				'🔢 Для создания объявления необходимо указать номер в системе "Меркурий".\n\nПожалуйста, введите ваш номер:',
+				{
+					reply_markup: {
+						inline_keyboard: [[Markup.button.callback('« Отмена', 'menu')]],
+					},
+				},
+			)
+			return
+		}
+
+		// Если номер есть, начинаем создание объявления
 		this.offerStates.set(userId, { photos: [] })
 		await ctx.reply(
-			'📸 Отправьте фотографии КРС\n\n' +
-				'❗️ Важно: отправьте все фотографии одним сообщением (до 10 штук)\n' +
+			'📸 Отправьте фотографии КРС (до 5 фото)\n\n' +
 				'✅ Рекомендуется:\n' +
 				'• Фото животных в полный рост\n' +
 				'• При хорошем освещении\n' +
 				'• С разных ракурсов',
 			{
-				parse_mode: 'HTML',
-				...Markup.inlineKeyboard([
-					[Markup.button.callback('« Отмена', 'menu')],
-				]),
+				reply_markup: {
+					inline_keyboard: [
+						[{ text: '➡️ Продолжить', callback_data: 'photos_done' }],
+						[{ text: '« Отмена', callback_data: 'menu' }],
+					],
+				},
 			},
 		)
 	}
 
-	async handleOfferState(ctx, userId: number, text: string): Promise<boolean> {
-		const offerState = this.offerStates.get(userId)
-		if (!offerState) return false
-
-		console.log('Current state before:', offerState) // Для отладки
-
-		// Проверяем, если название еще не введено и есть фотографии
-		if (!offerState.title && offerState.photos?.length > 0) {
-			offerState.title = text
-			this.offerStates.set(userId, offerState)
-			await this.askForDetail(
-				ctx,
-				userId,
-				'описание объявления',
-				'📝',
-				'description',
-			)
-			console.log('State after title:', this.offerStates.get(userId)) // Для отладки
-			return true
+	async handlePhotoUpload(ctx: Context, fileUrl: string, userId: number) {
+		const state = this.offerStates.get(userId)
+		if (!state) {
+			await ctx.reply('❌ Начните создание объявления заново')
+			return
 		}
 
-		// Проверяем, если описание не установлено (null или undefined)
-		if (offerState.description === null && offerState.title) {
-			offerState.description = text
-			this.offerStates.set(userId, offerState)
-			await this.askForDetail(
-				ctx,
-				userId,
-				'цену за голову (в рублях)',
-				'💰',
-				'price',
-			)
-			console.log('State after description:', this.offerStates.get(userId)) // Для отладки
-			return true
+		if (state.photos.length >= 5) {
+			await ctx.reply('❌ Достигнут лимит фотографий (максимум 5)')
+			return
 		}
 
-		// Проверяем, если цена еще не введена и описание уже есть
-		if (!offerState.price && offerState.description) {
-			const price = parseFloat(text)
-			if (isNaN(price) || price <= 0) {
-				await ctx.reply(
-					'❌ Введите корректную цену в рублях\n\nПример: 50000',
-					{
-						reply_markup: {
-							inline_keyboard: [
-								[Markup.button.callback('« Назад', 'create_offer')],
-							],
-						},
-					},
-				)
-				return true
-			}
-			offerState.price = price
-			this.offerStates.set(userId, offerState)
-			await this.askForDetail(ctx, userId, 'количество голов', '🔢', 'quantity')
-			return true
-		}
+		try {
+			// Загружаем фото в S3
+			const uploadResult = await this.s3Service.uploadFile({
+				buffer: Buffer.from(await (await fetch(fileUrl)).arrayBuffer()),
+				originalname: `photo_${Date.now()}.jpg`,
+				mimetype: 'image/jpeg',
+				fieldname: 'file',
+				encoding: '7bit',
+				size: 0,
+			})
 
-		if (!offerState.quantity && offerState.price) {
-			const quantity = parseInt(text)
-			if (isNaN(quantity) || quantity <= 0) {
-				await ctx.reply('❌ Введите корректное количество', {
+			state.photos.push({
+				url: uploadResult.url,
+				key: uploadResult.key,
+			})
+
+			this.offerStates.set(userId, state)
+
+			await ctx.reply(
+				`✅ Фото ${state.photos.length}/5 добавлено\n\nДобавьте еще фото или нажмите "Продолжить"`,
+				{
 					reply_markup: {
 						inline_keyboard: [
-							[Markup.button.callback('« Назад', 'create_offer')],
+							[{ text: '➡️ Продолжить', callback_data: 'photos_done' }],
+							[{ text: '« Отмена', callback_data: 'menu' }],
 						],
 					},
-				})
-				return true
-			}
-			offerState.quantity = quantity
-			this.offerStates.set(userId, offerState)
-			await this.askForDetail(ctx, userId, 'породу КРС', '🐮', 'breed')
-			return true
-		}
-
-		if (!offerState.breed && offerState.quantity) {
-			offerState.breed = text
-			this.offerStates.set(userId, offerState)
-			await this.askForDetail(ctx, userId, 'возраст КРС в месяцах', '🌱', 'age')
-			return true
-		}
-
-		if (!offerState.age && offerState.breed) {
-			const age = parseInt(text)
-			if (isNaN(age) || age <= 0) {
-				await ctx.reply('❌ Введите корректный возраст', {
-					reply_markup: {
-						inline_keyboard: [
-							[Markup.button.callback('« Назад', 'create_offer')],
-						],
-					},
-				})
-				return true
-			}
-			offerState.age = age
-			this.offerStates.set(userId, offerState)
-			await this.askForDetail(ctx, userId, 'вес КРС в кг', '⚖️', 'weight')
-			return true
-		}
-
-		if (!offerState.weight && offerState.age) {
-			const weight = parseFloat(text)
-			if (isNaN(weight) || weight <= 0) {
-				await ctx.reply('❌ Введите корректный вес', {
-					reply_markup: {
-						inline_keyboard: [
-							[Markup.button.callback('« Назад', 'create_offer')],
-						],
-					},
-				})
-				return true
-			}
-			offerState.weight = weight
-			this.offerStates.set(userId, offerState)
-			await this.askForDetail(
-				ctx,
-				userId,
-				'местоположение КРС',
-				'📍',
-				'location',
+				},
 			)
-			return true
+		} catch (error) {
+			console.error('Ошибка при загрузке фото:', error)
+			await ctx.reply('❌ Произошла ошибка при загрузке фото')
+		}
+	}
+
+	async handleOfferInput(ctx: Context, text: string) {
+		const userId = ctx.from.id
+		const state = this.offerStates.get(userId)
+
+		if (!state) {
+			await ctx.reply('❌ Начните создание объявления заново')
+			return
 		}
 
-		if (!offerState.location && offerState.weight) {
-			offerState.location = text
+		switch (state.inputType) {
+			case 'mercury_number':
+				await this.prisma.user.update({
+					where: { telegramId: userId.toString() },
+					data: { mercuryNumber: text },
+				})
+				await this.handleCreateOffer(ctx)
+				break
 
-			// Создаем объявление со статусом PENDING
+			case 'title':
+				state.title = text
+				state.inputType = 'breed'
+				await ctx.reply('🐮 Введите породу КРС:')
+				break
+
+			case 'breed':
+				state.breed = text
+				state.inputType = 'quantity'
+				await ctx.reply('🔢 Введите количество голов:')
+				break
+
+			case 'quantity':
+				const quantity = parseInt(text)
+				if (isNaN(quantity) || quantity <= 0) {
+					await ctx.reply('❌ Введите корректное количество')
+					return
+				}
+				state.quantity = quantity
+				state.inputType = 'weight'
+				await ctx.reply('⚖️ Введите вес (кг):')
+				break
+
+			case 'weight':
+				const weight = parseFloat(text)
+				if (isNaN(weight) || weight <= 0) {
+					await ctx.reply('❌ Введите корректный вес')
+					return
+				}
+				state.weight = weight
+				state.inputType = 'age'
+				await ctx.reply('🌱 Введите возраст (месяцев):')
+				break
+
+			case 'age':
+				const age = parseInt(text)
+				if (isNaN(age) || age <= 0) {
+					await ctx.reply('❌ Введите корректный возраст')
+					return
+				}
+				state.age = age
+				state.inputType = 'price'
+				await ctx.reply('💰 Введите цену за голову (₽):')
+				break
+
+			case 'price':
+				const price = parseFloat(text)
+				if (isNaN(price) || price <= 0) {
+					await ctx.reply('❌ Введите корректную цену')
+					return
+				}
+				state.price = price
+				state.inputType = 'location'
+				await ctx.reply('📍 Введите регион:')
+				break
+
+			case 'location':
+				state.location = text
+				state.inputType = 'mercury'
+				await ctx.reply('📋 Введите RU-номер в системе "Меркурий":')
+				break
+
+			case 'mercury':
+				state.mercuryNumber = text
+				state.inputType = 'contact_person'
+				await ctx.reply('👤 Введите ФИО контактного лица:')
+				break
+
+			case 'contact_person':
+				state.contactPerson = text
+				state.inputType = 'contact_phone'
+				await ctx.reply('📱 Введите контактный телефон:')
+				break
+
+			case 'contact_phone':
+				if (!this.validatePhone(text)) {
+					await ctx.reply(
+						'❌ Неверный формат номера. Введите в формате +7XXXXXXXXXX',
+					)
+					return
+				}
+				state.contactPhone = text
+				state.inputType = 'description'
+				await ctx.reply('📝 Введите дополнительное описание:')
+				break
+
+			case 'description':
+				state.description = text
+				await this.createOffer(ctx, state)
+				break
+		}
+
+		this.offerStates.set(userId, state)
+	}
+
+	async createOffer(ctx: Context, state: OfferState) {
+		try {
+			const userId = ctx.from.id
 			const user = await this.prisma.user.findUnique({
 				where: { telegramId: userId.toString() },
 			})
 
+			if (!user) {
+				await ctx.reply('❌ Пользователь не найден')
+				return
+			}
+
 			const offer = await this.prisma.offer.create({
 				data: {
-					title: offerState.title,
-					description: offerState.description,
-					price: offerState.price,
-					quantity: offerState.quantity,
-					breed: offerState.breed,
-					age: offerState.age,
-					weight: offerState.weight,
-					location: offerState.location,
-					status: 'PENDING', // Добавляем статус PENDING
-					user: {
-						connect: {
-							id: user.id,
-						},
-					},
+					user: { connect: { id: user.id } },
+					title: state.title,
+					description: state.description,
+					price: state.price,
+					quantity: state.quantity,
+					age: state.age,
+					weight: state.weight,
+					location: state.location,
+					breed: state.breed,
+					status: 'PENDING',
+					mercuryNumber: state.mercuryNumber,
+					contactPerson: state.contactPerson,
+					contactPhone: state.contactPhone,
 					images: {
-						create: offerState.photos.map(photo => ({
+						create: state.photos.map(photo => ({
 							url: photo.url,
 							key: photo.key,
 						})),
 					},
 				},
-				include: {
-					images: true,
-				},
 			})
 
-			// Отправляем уведомление админам
-			await this.notifyAdmins(offer)
-
 			this.offerStates.delete(userId)
-
 			await ctx.reply(
-				`✅ Объявление успешно создано и отправлено на модерацию!\n\n` +
-					`📝 Название: ${offer.title}\n` +
-					`💰 Цена: ${offer.price} руб/голову\n` +
-					`🔢 Количество: ${offer.quantity} голов\n` +
-					`🐮 Порода: ${offer.breed}\n` +
-					`🌱 Возраст: ${offer.age} мес.\n` +
-					`⚖️ Вес: ${offer.weight} кг\n` +
-					`📍 Локация: ${offer.location}\n\n` +
-					`⏳ Ожидайте подтверждения модератором`,
-				{ parse_mode: 'HTML' },
+				'✅ Объявление создано и отправлено на модерацию!\n\nПосле проверки администратором, оно станет доступно в общем списке.',
+				{
+					reply_markup: {
+						inline_keyboard: [[{ text: '« Меню', callback_data: 'menu' }]],
+					},
+				},
 			)
-			return true
-		}
 
-		return false
+			// Уведомляем админов
+			await this.notifyAdmins(offer)
+		} catch (error) {
+			console.error('Ошибка при создании объявления:', error)
+			await ctx.reply('❌ Произошла ошибка при создании объявления')
+		}
 	}
 
 	// Добавляем метод для уведомления админов
@@ -452,154 +511,208 @@ ${
 		})
 	}
 
-	async handleBrowseOffers(ctx) {
-		console.log('handleBrowseOffers вызван')
-		const userId = ctx.from.id
+	async handleBrowseOffers(ctx: Context, page: number = 1) {
+		const ITEMS_PER_PAGE = 10
+		const skip = (page - 1) * ITEMS_PER_PAGE
 
-		const user = await this.prisma.user.findUnique({
-			where: { telegramId: userId.toString() },
+		const totalOffers = await this.prisma.offer.count({
+			where: {
+				status: 'ACTIVE',
+			},
 		})
-		console.log('Пользователь:', user)
+
+		const totalPages = Math.ceil(totalOffers / ITEMS_PER_PAGE)
 
 		const offers = await this.prisma.offer.findMany({
 			where: {
 				status: 'ACTIVE',
 			},
 			include: {
-				user: true,
 				images: true,
 			},
 			orderBy: {
 				createdAt: 'desc',
 			},
-			take: 10,
+			take: ITEMS_PER_PAGE,
+			skip: skip,
 		})
-		console.log('Найденные объявления:', offers)
 
 		if (!offers.length) {
-			console.log('Нет активных объявлений')
 			await ctx.reply('📭 Пока нет активных объявлений', {
-				parse_mode: 'HTML',
-				...Markup.inlineKeyboard([[Markup.button.callback('« Меню', 'menu')]]),
+				reply_markup: {
+					inline_keyboard: [[{ text: '« Меню', callback_data: 'menu' }]],
+				},
 			})
 			return
 		}
 
-		const buttons = offers.map(offer => {
-			const buttonText = `${
-				offer.title || offer.breed
-			} - ${offer.price.toLocaleString('ru-RU')}₽ (${offer.user.name})`
-			const callbackData = `view_offer_${offer.id}`
-			console.log('Создана кнопка:', { buttonText, callbackData })
-			return [Markup.button.callback(buttonText, callbackData)]
-		})
-
-		buttons.push([Markup.button.callback('« Меню', 'menu')])
-		console.log('Финальные кнопки:', buttons)
-
-		await ctx.reply(
-			`🐮 <b>Доступный КРС:</b>\n\nВыберите объявление для просмотра деталей:`,
+		// Создаем кнопки для каждого предложения
+		const offerButtons = offers.map(offer => [
 			{
-				parse_mode: 'HTML',
-				...Markup.inlineKeyboard(buttons),
+				text: `${offer.price.toLocaleString('ru-RU')}₽ - ${offer.breed || 'КРС'}`,
+				callback_data: `view_offer_${offer.id}`,
 			},
-		)
+		])
+
+		// Добавляем кнопки пагинации
+		const paginationButtons = []
+		if (totalPages > 1) {
+			const buttons = []
+			if (page > 1) {
+				buttons.push({
+					text: '« Предыдущая',
+					callback_data: `browse_offers_${page - 1}`,
+				})
+			}
+			if (page < totalPages) {
+				buttons.push({
+					text: 'Следующая »',
+					callback_data: `browse_offers_${page + 1}`,
+				})
+			}
+			if (buttons.length > 0) {
+				paginationButtons.push(buttons)
+			}
+		}
+
+		await ctx.reply('📋 <b>Выберите предложение:</b>', {
+			parse_mode: 'HTML',
+			reply_markup: {
+				inline_keyboard: [
+					...offerButtons,
+					...paginationButtons,
+					[{ text: '« Меню', callback_data: 'menu' }],
+				],
+			},
+		})
 	}
 
-	async handleViewOffer(ctx) {
-		console.log('handleViewOffer вызван')
-		console.log('Callback query:', ctx.callbackQuery)
+	// Метод для получения только региона
+	private getRegionOnly(location: string): string {
+		// Берем только первое слово из локации (предполагается, что это регион)
+		return location.split(' ')[0]
+	}
 
-		const offerId = ctx.callbackQuery.data.split('_')[2]
-		console.log('ID объявления:', offerId)
-
+	// Обработчик запроса контактов
+	async handleContactRequest(ctx: Context) {
+		const callbackQuery = ctx.callbackQuery as CallbackQuery.DataQuery
+		const offerId = callbackQuery.data.split('_')[2]
 		const userId = ctx.from.id
-		const user = await this.prisma.user.findUnique({
-			where: { telegramId: userId.toString() },
-		})
-		console.log('Пользователь:', user)
 
-		try {
-			const offer = await this.prisma.offer.findUnique({
-				where: {
-					id: offerId,
+		const [user, offer] = await Promise.all([
+			this.prisma.user.findUnique({
+				where: { telegramId: userId.toString() },
+			}),
+			this.prisma.offer.findUnique({
+				where: { id: offerId },
+				include: { user: true },
+			}),
+		])
+
+		await ctx.reply(
+			'📱 Запрос на получение контактов отправлен администратору',
+			{
+				reply_markup: {
+					inline_keyboard: [
+						[{ text: '« Назад', callback_data: `view_offer_${offerId}` }],
+						[{ text: '« Меню', callback_data: 'menu' }],
+					],
 				},
-				include: {
-					user: true,
-					images: true,
+			},
+		)
+
+		// Уведомляем админов
+		const admins = await this.prisma.user.findMany({
+			where: { role: 'ADMIN' },
+		})
+
+		const approveUrl = `${process.env.API_URL}/api/approve-contacts?offerId=${offerId}&userId=${user.id}`
+
+		const adminMessage = `
+🔔 Новый запрос на контакты
+
+От кого:
+👤 ${user.name}
+📧 ${user.email}
+📱 ${user.phone || 'Телефон не указан'}
+
+Запрашивает информацию по объявлению:
+🐮 ${offer.breed || 'КРС'}
+💰 ${offer.price.toLocaleString('ru-RU')}₽/гол
+🔢 ${offer.quantity} голов
+📍 ${this.getRegionOnly(offer.location)}
+
+<a href="${approveUrl}">🔗 Разрешить доступ к контактам</a>`
+
+		for (const admin of admins) {
+			if (admin.telegramId) {
+				await this.telegramClient.sendMessage(admin.telegramId, adminMessage, {
+					parse_mode: 'HTML',
+					disable_web_page_preview: true,
+				})
+			}
+		}
+	}
+
+	async handleViewOffer(ctx: Context) {
+		const callbackQuery = ctx.callbackQuery as CallbackQuery.DataQuery
+		const offerId = callbackQuery.data.split('_')[2]
+
+		const offer = await this.prisma.offer.findUnique({
+			where: { id: offerId },
+			include: { images: true },
+		})
+
+		if (!offer) {
+			await ctx.reply('❌ Объявление не найдено или было удалено', {
+				reply_markup: {
+					inline_keyboard: [
+						[{ text: '« Назад', callback_data: 'browse_offers' }],
+					],
 				},
 			})
-			console.log('Найденное объявление:', offer)
+			return
+		}
 
-			if (!offer) {
-				console.log('Объявление не найдено')
-				await ctx.reply('❌ Объявление не найдено или было удалено', {
-					reply_markup: Markup.inlineKeyboard([
-						[Markup.button.callback('« Назад к списку', 'browse_offers')],
-					]),
-				})
-				return
-			}
+		// Отправляем все фотографии одним сообщением
+		if (offer.images && offer.images.length > 0) {
+			const mediaGroup: InputMediaPhoto[] = offer.images.map(
+				(image, index) => ({
+					type: 'photo',
+					media: image.url,
+					caption: index === 0 ? `🐮 <b>КРС</b>` : undefined,
+					parse_mode: index === 0 ? 'HTML' : undefined,
+				}),
+			)
 
-			// Отправляем фотографии
-			if (offer.images && offer.images.length > 0) {
-				console.log('Отправка фотографий:', offer.images)
-				try {
-					const mediaGroup = offer.images.map(image => ({
-						type: 'photo',
-						media: image.url,
-						caption:
-							image === offer.images[0] ? `${offer.title || 'КРС'}` : undefined,
-					}))
-					await ctx.replyWithMediaGroup(mediaGroup)
-				} catch (error) {
-					console.error('Ошибка при отправке фотографий:', error)
-					await ctx.reply('⚠️ Не удалось загрузить фотографии')
-				}
-			}
+			await ctx.replyWithMediaGroup(mediaGroup)
+		}
 
-			const offerDetails = `
-📦 <b>${offer.title || 'КРС'}</b>
-
-🐮 Порода: ${offer.breed}
+		const offerDetails = `
+${offer.breed ? `🐄 Порода: ${offer.breed}\n` : ''}
 🔢 Количество: ${offer.quantity} голов
 ⚖️ Вес: ${offer.weight} кг
 🌱 Возраст: ${offer.age} мес.
 💰 Цена: ${offer.price.toLocaleString('ru-RU')} ₽/гол
-📍 Регион: ${offer.location.split(' ')[0]}
+📍 Регион: ${this.getRegionOnly(offer.location)}
 
-📝 Описание:
-${offer.description || 'Описание отсутствует'}`
+📝 ${offer.description || 'Описание отсутствует'}`
 
-			const buttons = [
-				[
-					Markup.button.callback(
-						'💬 Запросить подробности',
-						`request_info_${offer.id}`,
-					),
+		await ctx.reply(offerDetails, {
+			parse_mode: 'HTML',
+			reply_markup: {
+				inline_keyboard: [
+					[
+						{
+							text: '📲 Запросить контакты',
+							callback_data: `request_contacts_${offer.id}`,
+						},
+					],
+					[{ text: '« Назад к списку', callback_data: 'browse_offers' }],
+					[{ text: '« Меню', callback_data: 'menu' }],
 				],
-				[
-					Markup.button.callback(
-						'🤝 Заявить о намерении купить',
-						`express_interest_${offer.id}`,
-					),
-				],
-				[Markup.button.callback('« Назад к списку', 'browse_offers')],
-				[Markup.button.callback('« Меню', 'menu')],
-			]
-
-			await ctx.reply(offerDetails, {
-				parse_mode: 'HTML',
-				...Markup.inlineKeyboard(buttons),
-			})
-		} catch (error) {
-			console.error('Ошибка при получении объявления:', error)
-			await ctx.reply('❌ Произошла ошибка при загрузке объявления', {
-				reply_markup: Markup.inlineKeyboard([
-					[Markup.button.callback('« Назад к списку', 'browse_offers')],
-				]),
-			})
-		}
+			},
+		})
 	}
 
 	async showMyOffers(ctx: Context) {
@@ -639,9 +752,11 @@ ${index + 1}. <b>${offer.title}</b>
 💰 ${offer.price} ₽/гол
 📍 ${offer.location}
 ${
-	offer.matches.length > 0
-		? `✅ Заявок: ${offer.matches.length}`
-		: '⏳ Ожидание заявок...'
+	offer.status === 'PENDING'
+		? '⏳ На проверке'
+		: offer.matches.length > 0
+			? `✅ Заявок: ${offer.matches.length}`
+			: ''
 }`,
 			)
 			.join('\n\n')
@@ -659,128 +774,38 @@ ${
 		return this.offerStates.get(userId)
 	}
 
-	async handlePhotoUpload(ctx: Context, fileUrl: string, userId: number) {
-		const state = this.offerStates.get(userId)
-
-		if (!state) {
-			await ctx.reply('❌ Сначала начните создание объявления')
-			return
-		}
-
-		try {
-			// Загружаем файл
-			const response = await fetch(fileUrl)
-			const buffer = await response.buffer()
-
-			// Генерируем уникальное имя файла
-			const fileName = `offers/${userId}_${Date.now()}.jpg`
-
-			// Загружаем в S3
-			const uploadResult = await this.s3Service.upload(
-				buffer,
-				fileName,
-				'image/jpeg',
-			)
-
-			// Добавляем URL в состояние
-			if (!state.photos) {
-				state.photos = []
-			}
-			state.photos.push({
-				url: uploadResult.url,
-				key: fileName,
-			})
-
-			this.offerStates.set(userId, state)
-
-			// Если это первое фото, просим пользователя ввести название
-			if (state.photos.length === 1) {
-				await ctx.reply(
-					'Фото успешно загружено! Теперь введите название объявления:',
-					Markup.inlineKeyboard([
-						[Markup.button.callback('« Отмена', 'cancel_offer')],
-					]),
-				)
-			} else {
-				await ctx.reply(
-					`✅ Фото добавлено (${state.photos.length}/10)\n\nВы можете добавить еще фото или продолжить заполнение объявления:`,
-					Markup.inlineKeyboard([
-						[Markup.button.callback('Продолжить ▶️', 'continue_offer')],
-						[Markup.button.callback('« Отмена', 'cancel_offer')],
-					]),
-				)
-			}
-		} catch (error) {
-			console.error('Ошибка при загрузке фото:', error)
-			await ctx.reply(
-				'❌ Произошла ошибка при загрузке фото. Попробуйте еще раз.',
-			)
-		}
-	}
-
-	async handleOfferTitleInput(ctx: Context, text: string) {
+	async handlePhotosDone(ctx: Context) {
 		const userId = ctx.from.id
+		const state = this.offerStates.get(userId)
 
-		// Проверяем, существует ли уже объявление с таким названием
-		const existingOffers = await this.prisma.offer.findMany({
-			where: { title: text },
-		})
-
-		if (existingOffers.length > 0) {
-			await ctx.reply(
-				'❌ Объявление с таким названием уже существует. Пожалуйста, введите другое название:',
-			)
+		if (!state || !state.photos || state.photos.length === 0) {
+			await ctx.reply('❌ Необходимо добавить хотя бы одно фото')
 			return
 		}
 
-		// Если все в порядке, сохраняем название объявления
-		const state = await this.getOfferState(userId)
-		state.title = text
-		this.setOfferState(userId, state)
-
-		await ctx.reply(
-			'✅ Название объявления сохранено! Теперь введите описание:',
-		)
+		state.inputType = 'title'
+		this.offerStates.set(userId, state)
+		await ctx.reply('📝 Введите название объявления:')
 	}
 
-	async handleOfferDetails(ctx: Context, userId: number, details: OfferState) {
+	async handleOfferTitleInput(ctx: Context, title: string) {
+		const userId = ctx.from.id
 		const state = this.offerStates.get(userId)
 
 		if (!state) {
-			await ctx.reply('❌ Сначала начните создание объявления')
+			await ctx.reply('❌ Начните создание объявления заново')
 			return
 		}
 
-		// Сохраняем детали в состоянии
-		state.price = details.price
-		state.quantity = details.quantity
-		state.breed = details.breed
-		state.age = details.age
-		state.weight = details.weight
-		state.location = details.location
-		state.contact = details.contact
-
+		state.title = title
+		state.inputType = 'quantity'
 		this.offerStates.set(userId, state)
-
-		// Здесь вы можете добавить логику для сохранения объявления в базу данных
-		await ctx.reply(
-			`✅ Объявление успешно создано! 🎉\n\nВот ваши детали:\n\n📝 <b>Название:</b> ${state.title}\n💰 <b>Цена:</b> ${state.price} руб/голову\n🔢 <b>Количество голов:</b> ${state.quantity}\n🐮 <b>Порода:</b> ${state.breed}\n🌱 <b>Возраст:</b> ${state.age} мес.\n⚖️ <b>Вес:</b> ${state.weight} кг\n📍 <b>Локация:</b> ${state.location}\n📞 <b>Контакт:</b> ${state.contact}`,
-			{
-				parse_mode: 'HTML',
-				reply_markup: {
-					inline_keyboard: [
-						[Markup.button.callback('« Назад к списку', 'menu')],
-					],
-				},
-			},
-		)
-
-		// Удаляем состояние после завершения
-		this.offerStates.delete(userId)
+		await ctx.reply('🔢 Введите количество голов:')
 	}
 
-	setOfferState(userId: number, state: OfferState) {
-		this.offerStates.set(userId, state)
+	private validatePhone(phone: string): boolean {
+		const phoneRegex = /^\+?[0-9]{10,15}$/
+		return phoneRegex.test(phone)
 	}
 
 	async askForDetail(
@@ -808,16 +833,16 @@ ${
 
 	async startOfferCreation(ctx: Context) {
 		const userId = ctx.from.id
-
-		// Инициализируем состояние объявления
-		const state: OfferState = {
-			title: '',
-			description: '',
-			inputType: 'title', // Устанавливаем inputType
-		}
-
-		this.offerStates.set(userId, state)
-
-		await ctx.reply('🔙 Пожалуйста, введите название объявления:')
+		this.offerStates.set(userId, { photos: [] })
+		await ctx.reply(
+			'📸 Для начала отправьте фотографии КРС (до 5 фото)\n\nКогда закончите добавлять фото, нажмите "Продолжить"',
+			{
+				reply_markup: {
+					inline_keyboard: [
+						[{ text: '➡️ Продолжить', callback_data: 'photos_done' }],
+					],
+				},
+			},
+		)
 	}
 }

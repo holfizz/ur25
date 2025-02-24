@@ -1,5 +1,12 @@
 import { AuthService } from '@/auth/auth.service'
-import { Body, Controller, Post, UseGuards } from '@nestjs/common'
+import {
+	Body,
+	Controller,
+	HttpException,
+	HttpStatus,
+	Post,
+	UseGuards,
+} from '@nestjs/common'
 import { Command, Ctx, On, Update } from 'nestjs-telegraf'
 import { Context } from 'telegraf'
 import { Message } from 'telegraf/typings/core/types/typegram'
@@ -57,5 +64,19 @@ export class TelegramController {
 	@Post('reject-offer')
 	async handleRejectOffer(@Body('offerId') offerId: string) {
 		return await this.offerService.rejectOffer(offerId)
+	}
+
+	@Post('approve-contacts')
+	async approveContacts(@Body() body: { offerId: string; userId: string }) {
+		try {
+			const { offerId, userId } = body
+			// Здесь логика подтверждения контактов
+			return { success: true }
+		} catch (error) {
+			throw new HttpException(
+				'Ошибка при подтверждении контактов',
+				HttpStatus.BAD_REQUEST,
+			)
+		}
 	}
 }

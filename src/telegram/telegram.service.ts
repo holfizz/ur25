@@ -42,23 +42,31 @@ export class TelegramService {
 	}
 
 	async handleMenu(ctx: Context) {
+		const userId = ctx.from.id
+		const user = await this.prisma.user.findUnique({
+			where: { telegramId: userId.toString() },
+		})
+
+		const buttons = [
+			[{ text: '📋 Все объявления', callback_data: 'browse_offers' }],
+		]
+
+		// Добавляем кнопки создания объявлений только для продавцов
+		if (user.role === 'SUPPLIER') {
+			buttons.unshift([
+				{ text: '📝 Создать объявление', callback_data: 'create_ad' },
+				{ text: '📋 Мои объявления', callback_data: 'my_ads' },
+			])
+		}
+
+		buttons.push([
+			{ text: '❓ Помощь', callback_data: 'help' },
+			{ text: '🚪 Выйти', callback_data: 'logout' },
+		])
+
 		await ctx.reply('Выберите нужное действие:', {
 			reply_markup: {
-				inline_keyboard: [
-					[
-						{ text: '📝 Создать объявление', callback_data: 'create_ad' },
-						{ text: '📋 Мои объявления', callback_data: 'my_ads' },
-					],
-					[
-						{ text: '📱 Профиль', callback_data: 'profile' },
-						{ text: '🔑 Войти', callback_data: 'login' },
-					],
-					[
-						{ text: '❓ Помощь', callback_data: 'help' },
-						{ text: '🚪 Выйти', callback_data: 'logout' },
-					],
-					[{ text: '🏠 Главное меню', callback_data: 'menu' }],
-				],
+				inline_keyboard: buttons,
 			},
 		})
 	}

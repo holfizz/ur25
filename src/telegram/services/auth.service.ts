@@ -460,6 +460,15 @@ export class TelegramAuthService {
 		const state = this.getRegistrationState(userId)
 		state.entityType = userType
 
+		if (userType === 'individual') {
+			// Для физических лиц сразу переходим к вводу email
+			state.inputType = 'email'
+			this.registrationStates.set(userId, state)
+			await ctx.reply('📧 Введите ваш email:\n\n📝 Пример: example@mail.com')
+			return
+		}
+
+		// Для организаций оставляем прежнюю логику
 		await ctx.reply('Введите ваш ИНН или ОГРН:', {
 			reply_markup: {
 				inline_keyboard: [
@@ -615,10 +624,6 @@ export class TelegramAuthService {
 							[
 								{ text: '📝 Создать объявление', callback_data: 'create_ad' },
 								{ text: '📋 Мои объявления', callback_data: 'my_ads' },
-							],
-							[
-								{ text: '📱 Профиль', callback_data: 'profile' },
-								{ text: '🔑 Войти', callback_data: 'login' },
 							],
 							[
 								{ text: '❓ Помощь', callback_data: 'help' },

@@ -82,14 +82,22 @@ export class TelegramUpdate {
 		await this.authService.setInputType(ctx, inputType)
 	}
 
+	@Action('create_ad')
+	async handleCreateOffer(@Ctx() ctx: Context) {
+		await this.offerService.startOfferCreation(ctx)
+	}
+
+	@Action('photos_done')
+	async handlePhotosDone(@Ctx() ctx: Context) {
+		await this.offerService.handlePhotosDone(ctx)
+	}
+
 	@On('text')
 	async handleText(@Ctx() ctx: Context) {
 		const userId = ctx.from.id
 
 		// Проверяем состояние входа
 		const loginState = this.authService.getLoginState(userId)
-		console.log('Состояние входа:', loginState)
-
 		if (loginState) {
 			if (ctx.message && 'text' in ctx.message) {
 				await this.authService.handleLoginInput(ctx, ctx.message.text)
@@ -97,16 +105,14 @@ export class TelegramUpdate {
 			return
 		}
 
-		// Проверяем состояние создания предложения
+		// Проверяем состояние создания объявления
 		const offerState = await this.offerService.getOfferState(userId)
 		if (offerState && ctx.message && 'text' in ctx.message) {
-			if (offerState.inputType === 'title') {
-				await this.offerService.handleOfferTitleInput(ctx, ctx.message.text)
-			}
+			await this.offerService.handleOfferInput(ctx, ctx.message.text)
 			return
 		}
 
-		// Если нет активных состояний, передаем управление базовому обработчику
+		// Если нет активных состояний
 		if (ctx.message && 'text' in ctx.message) {
 			await this.authService.handleTextInput(ctx, ctx.message.text)
 		}
@@ -118,6 +124,18 @@ export class TelegramUpdate {
 		await ctx.answerCbQuery()
 
 		const userId = ctx.from.id
+
+		// Обработка просмотра объявления
+		if (query.data.startsWith('view_offer_')) {
+			await this.offerService.handleViewOffer(ctx)
+			return
+		}
+
+		// Обработка запроса контактов
+		if (query.data.startsWith('request_contacts_')) {
+			await this.offerService.handleContactRequest(ctx)
+			return
+		}
 
 		if (query.data === 'create_offer') {
 			await this.offerService.startOfferCreation(ctx)
@@ -164,6 +182,9 @@ export class TelegramUpdate {
 			case 'menu':
 				await this.telegramService.handleMenu(ctx)
 				break
+			case 'browse_offers':
+				await this.offerService.handleBrowseOffers(ctx, 1)
+				break
 		}
 	}
 
@@ -174,14 +195,12 @@ export class TelegramUpdate {
 
 		try {
 			const offerState = await this.offerService.getOfferState(userId)
-
 			if (!offerState) {
 				await ctx.reply('❌ Сначала начните создание объявления')
 				return
 			}
 
 			const photo = photos[photos.length - 1]
-
 			const file = await ctx.telegram.getFile(photo.file_id)
 			const fileUrl = `https://api.telegram.org/file/bot${process.env.TELEGRAM_BOT_TOKEN}/${file.file_path}`
 
@@ -197,5 +216,30 @@ export class TelegramUpdate {
 	@Action('login')
 	async handleLogin(@Ctx() ctx: Context) {
 		await this.telegramService.handleLogin(ctx)
+	}
+
+	@Action('browse_offers')
+	async handleBrowseOffers(@Ctx() ctx: Context) {
+		await this.offerService.handleBrowseOffers(ctx, 1)
+	}
+
+	@Action(/browse_offers_(\d+)/)
+	async handleBrowseOffersPage(@Ctx() ctx: Context) {
+		//@ts-ignore
+		const match = ctx.callbackQuery.data.match(/browse_offers_(\d+)/)
+		if (match) {
+			const page = parseInt(match[1])
+			await this.offerService.handleBrowseOffers(ctx, page)
+		}
+	}
+
+	@Action(/request_contacts_.*/)
+	async handleContactRequest(@Ctx() ctx: Context) {
+		await this.offerService.handleContactRequest(ctx)
+	}
+
+	@Action(/view_offer_.*/)
+	async handleViewOffer(@Ctx() ctx: Context) {
+		await this.offerService.handleViewOffer(ctx)
 	}
 }
