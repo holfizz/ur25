@@ -84,8 +84,15 @@ export class TelegramUpdate {
 
 	@On('text')
 	async handleText(@Ctx() ctx: Context) {
-		if ('text' in ctx.message) {
-			await this.authService.handleTextInput(ctx, ctx.message.text)
+		const userId = ctx.from.id
+		const state = await this.offerService.getOfferState(userId)
+
+		if (ctx.message && 'text' in ctx.message) {
+			if (state && state.inputType === 'title') {
+				await this.offerService.handleOfferTitleInput(ctx, ctx.message.text)
+			} else {
+				await this.authService.handleTextInput(ctx, ctx.message.text)
+			}
 		}
 	}
 
@@ -97,10 +104,7 @@ export class TelegramUpdate {
 		const userId = ctx.from.id
 
 		if (query.data === 'create_offer') {
-			this.offerService.setOfferState(userId, {})
-			await ctx.reply(
-				'🔙 Вы вернулись к созданию объявления. Пожалуйста, введите название объявления:',
-			)
+			await this.offerService.startOfferCreation(ctx)
 			return
 		}
 

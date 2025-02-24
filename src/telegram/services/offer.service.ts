@@ -18,6 +18,7 @@ interface OfferState {
 	location?: string
 	contact?: string
 	photos?: Array<{ url: string; key: string }>
+	inputType?: string
 }
 
 interface UploadedFile {
@@ -717,27 +718,29 @@ ${
 		}
 	}
 
-	async handleTitleInput(ctx: Context, userId: number, title: string) {
-		const state = this.offerStates.get(userId)
+	async handleOfferTitleInput(ctx: Context, text: string) {
+		const userId = ctx.from.id
 
-		if (!state) {
-			await ctx.reply('❌ Сначала начните создание объявления')
+		// Проверяем, существует ли уже объявление с таким названием
+		const existingOffers = await this.prisma.offer.findMany({
+			where: { title: text },
+		})
+
+		if (existingOffers.length > 0) {
+			await ctx.reply(
+				'❌ Объявление с таким названием уже существует. Пожалуйста, введите другое название:',
+			)
 			return
 		}
 
-		// Сохраняем название в состоянии
-		state.title = title
-		this.offerStates.set(userId, state)
+		// Если все в порядке, сохраняем название объявления
+		const state = await this.getOfferState(userId)
+		state.title = text
+		this.setOfferState(userId, state)
 
-		// Здесь вы можете добавить логику для сохранения объявления в базу данных
-		await ctx.reply(`✅ Объявление "${title}" успешно создано!`, {
-			reply_markup: {
-				inline_keyboard: [[Markup.button.callback('« Назад к списку', 'menu')]],
-			},
-		})
-
-		// Удаляем состояние после завершения
-		this.offerStates.delete(userId)
+		await ctx.reply(
+			'✅ Название объявления сохранено! Теперь введите описание:',
+		)
 	}
 
 	async handleOfferDetails(ctx: Context, userId: number, details: OfferState) {
@@ -801,5 +804,20 @@ ${
 				inline_keyboard: [[Markup.button.callback('« Назад', 'create_offer')]],
 			},
 		})
+	}
+
+	async startOfferCreation(ctx: Context) {
+		const userId = ctx.from.id
+
+		// Инициализируем состояние объявления
+		const state: OfferState = {
+			title: '',
+			description: '',
+			inputType: 'title', // Устанавливаем inputType
+		}
+
+		this.offerStates.set(userId, state)
+
+		await ctx.reply('🔙 Пожалуйста, введите название объявления:')
 	}
 }
