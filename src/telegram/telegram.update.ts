@@ -53,7 +53,11 @@ export class TelegramUpdate {
 			},
 		})
 	}
-
+	@Action('skip_mercury')
+	async handleSkipMercury(@Ctx() ctx: Context) {
+		console.log('skip_mercury')
+		await this.authService.handleSkipMercury(ctx)
+	}
 	@Action(/role_.*/)
 	async handleRoleSelection(@Ctx() ctx: Context) {
 		const callbackQuery = ctx.callbackQuery

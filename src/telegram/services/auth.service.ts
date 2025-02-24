@@ -68,6 +68,19 @@ export class TelegramAuthService {
 				)
 				return
 			}
+
+			// Проверяем, существует ли пользователь с таким email
+			const existingUser = await this.prisma.user.findUnique({
+				where: { email: text },
+			})
+
+			if (existingUser) {
+				await ctx.reply(
+					'❌ Пользователь с такой почтой уже существует. Пожалуйста, введите другой email:',
+				)
+				return
+			}
+
 			state.email = text
 			state.inputType = 'password'
 			await ctx.reply('🔑 Придумайте пароль (минимум 6 символов):')
@@ -207,46 +220,46 @@ export class TelegramAuthService {
 	}
 
 	private async completeRegistration(ctx: Context, state: any) {
+		const userId = ctx.from.id
+
 		try {
+			// Проверяем email еще раз перед созданием пользователя
 			const existingUser = await this.prisma.user.findUnique({
-				where: { telegramId: ctx.from.id.toString() },
+				where: { email: state.email },
 			})
 
 			if (existingUser) {
-				await ctx.reply('❌ Пользователь с таким Telegram ID уже существует')
-				this.registrationStates.delete(ctx.from.id)
-				return
-			}
-
-			if (!state.role) {
 				await ctx.reply(
-					'❌ Роль пользователя не установлена. Пожалуйста, выберите роль.',
+					'❌ Пользователь с такой почтой уже существует. Пожалуйста, начните регистрацию заново.',
 				)
+				this.registrationStates.delete(userId)
 				return
 			}
 
 			const user = await this.prisma.user.create({
 				data: {
 					email: state.email,
-					password: await bcrypt.hash('defaultPassword', 10),
+					password: state.password,
 					phone: state.phone,
 					inn: state.inn,
 					ogrn: state.ogrn,
-					role: state.role,
-					name: state.name || 'Не указано',
-					telegramId: ctx.from.id.toString(),
-					mercuryNumber: state.mercuryNumber || null,
+					role: state.role.toUpperCase(),
+					name: state.name,
+					telegramId: userId.toString(),
+					mercuryNumber: state.mercuryNumber,
 				},
 			})
 
 			await ctx.reply(
-				'✅ Регистрация успешно завершена! Заявка на модерацию отправлена. Вам на почту придет сообщение о том, что вы прошли ее.',
+				'✅ Регистрация успешна!\n\n⏳ Ваша заявка отправлена на проверку администратору.\n📧 Уведомление о результатах проверки придет на указанную почту.',
 			)
-			this.registrationStates.delete(ctx.from.id)
+
+			// Очищаем состояние регистрации
+			this.registrationStates.delete(userId)
 		} catch (error) {
-			console.error('Ошибка при завершении регистрации:', error)
+			console.error('Ошибка при регистрации:', error)
 			await ctx.reply(
-				'❌ Произошла ошибка при регистрации. Попробуйте еще раз.',
+				'❌ Произошла ошибка при регистрации. Пожалуйста, попробуйте еще раз.',
 			)
 		}
 	}
@@ -423,7 +436,7 @@ export class TelegramAuthService {
 	async handleRoleSelection(ctx: Context, role: string) {
 		const userId = ctx.from.id
 		const state = this.getRegistrationState(userId)
-		state.role = role
+		state.role = role.toUpperCase()
 
 		await ctx.reply('✅ Роль выбрана! Теперь выберите тип регистрации:', {
 			reply_markup: {
@@ -520,6 +533,13 @@ export class TelegramAuthService {
 	async handleSkipMercury(ctx: Context) {
 		const userId = ctx.from.id
 		const state = this.getRegistrationState(userId)
+
+		if (!state) {
+			await ctx.reply(
+				'❌ Состояние регистрации не найдено. Пожалуйста, начните регистрацию заново.',
+			)
+			return
+		}
 
 		// Устанавливаем состояние, что номер в системе "Меркурий" пропущен
 		state.mercuryNumber = null // Или любое другое значение, которое вы хотите установить
