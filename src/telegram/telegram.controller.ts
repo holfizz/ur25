@@ -1,13 +1,20 @@
-import { Controller } from '@nestjs/common'
+import { Body, Controller, Post, UseGuards } from '@nestjs/common'
 import { Command, Ctx, On, Update } from 'nestjs-telegraf'
 import { Context } from 'telegraf'
 import { Message } from 'telegraf/typings/core/types/typegram'
+import { JwtAuthGuard } from '../auth/jwt-auth.guard'
+import { Roles } from '../auth/roles.decorator'
+import { RolesGuard } from '../auth/roles.guard'
+import { OfferService } from '../offer/offer.service'
 import { TelegramService } from './telegram.service'
 
 @Update()
 @Controller()
 export class TelegramController {
-	constructor(private readonly telegramService: TelegramService) {}
+	constructor(
+		private readonly telegramService: TelegramService,
+		private readonly offerService: OfferService,
+	) {}
 
 	@Command('start')
 	async handleStart(@Ctx() ctx: Context) {
@@ -23,5 +30,19 @@ export class TelegramController {
 	async handleMessage(@Ctx() ctx: Context) {
 		const message = ctx.message as Message.TextMessage
 		await this.telegramService.handleTextInput(ctx)
+	}
+
+	@UseGuards(JwtAuthGuard, RolesGuard)
+	@Roles('ADMIN')
+	@Post('verify-offer')
+	async handleVerifyOffer(@Body('offerId') offerId: string) {
+		return await this.offerService.verifyOffer(offerId)
+	}
+
+	@UseGuards(JwtAuthGuard, RolesGuard)
+	@Roles('ADMIN')
+	@Post('reject-offer')
+	async handleRejectOffer(@Body('offerId') offerId: string) {
+		return await this.offerService.rejectOffer(offerId)
 	}
 }

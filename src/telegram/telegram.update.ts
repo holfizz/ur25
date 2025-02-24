@@ -58,6 +58,13 @@ export class TelegramUpdate {
 		const message = ctx.message as Message.TextMessage
 		const userId = ctx.from.id
 
+		const offerState = this.offerService.getOfferState(userId)
+		if (offerState) {
+			// Передаем обработку текста в handleOfferState
+			await this.offerService.handleOfferState(ctx, userId, message.text)
+			return
+		}
+
 		const loginState = this.authService.getLoginState(userId)
 
 		if (loginState) {
@@ -84,6 +91,15 @@ export class TelegramUpdate {
 		await ctx.answerCbQuery()
 
 		const userId = ctx.from.id
+
+		if (query.data === 'create_offer') {
+			// Логика для возврата к созданию объявления
+			this.offerService.setOfferState(userId, {}) // Сброс состояния
+			await ctx.reply(
+				'🔙 Вы вернулись к созданию объявления. Пожалуйста, введите название объявления:',
+			)
+			return
+		}
 
 		// Обработка входа
 		if (query.data === 'login') {
@@ -128,6 +144,37 @@ export class TelegramUpdate {
 			case 'menu':
 				await this.telegramService.handleMenu(ctx)
 				break
+		}
+	}
+
+	@On('photo')
+	async onPhoto(@Ctx() ctx: Context) {
+		const photos = (ctx.message as Message.PhotoMessage).photo
+		const userId = ctx.from.id
+
+		try {
+			// Получаем состояние создания объявления
+			const offerState = await this.offerService.getOfferState(userId)
+
+			if (!offerState) {
+				await ctx.reply('❌ Сначала начните создание объявления')
+				return
+			}
+
+			// Получаем файл с наилучшим качеством (последний в массиве)
+			const photo = photos[photos.length - 1]
+
+			// Получаем информацию о файле
+			const file = await ctx.telegram.getFile(photo.file_id)
+			const fileUrl = `https://api.telegram.org/file/bot${process.env.TELEGRAM_BOT_TOKEN}/${file.file_path}`
+
+			// Сохраняем фото в S3 и добавляем URL в состояние
+			await this.offerService.handlePhotoUpload(ctx, fileUrl, userId)
+		} catch (error) {
+			console.error('Ошибка при обработке фото:', error)
+			await ctx.reply(
+				'❌ Произошла ошибка при загрузке фото. Попробуйте еще раз.',
+			)
 		}
 	}
 }

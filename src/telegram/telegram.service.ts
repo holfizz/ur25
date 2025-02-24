@@ -49,14 +49,14 @@ export class TelegramService {
 						{ text: '📋 Мои объявления', callback_data: 'my_ads' },
 					],
 					[
-						{ text: '📄 Заявки', callback_data: 'requests' },
-						{ text: '💬 Сообщения', callback_data: 'messages' },
+						{ text: '📱 Профиль', callback_data: 'profile' },
+						{ text: '🔑 Войти', callback_data: 'login' },
 					],
 					[
-						{ text: '👤 Профиль', callback_data: 'profile' },
-						{ text: 'ℹ️ Помощь', callback_data: 'help' },
+						{ text: '❓ Помощь', callback_data: 'help' },
+						{ text: '🚪 Выйти', callback_data: 'logout' },
 					],
-					[{ text: '🚪 Выйти', callback_data: 'logout' }],
+					[{ text: '🏠 Главное меню', callback_data: 'menu' }],
 				],
 			},
 		})
@@ -85,6 +85,17 @@ export class TelegramService {
 			await ctx.reply('❌ Пользователь не найден')
 			return
 		}
+
+		await ctx.reply('Введите ваше сообщение:', {
+			reply_markup: {
+				inline_keyboard: [
+					[
+						{ text: '🏠 Главное меню', callback_data: 'menu' },
+						{ text: '📱 Профиль', callback_data: 'profile' },
+					],
+				],
+			},
+		})
 	}
 
 	async sendVerificationNotification(telegramId: string) {
@@ -173,5 +184,10 @@ ${
 			console.error('Ошибка при получении объявлений:', error)
 			await ctx.reply('❌ Произошла ошибка при получении ваших объявлений.')
 		}
+	}
+
+	async handleRegistration(ctx: Context) {
+		await ctx.reply('Введите ваше имя:')
+		// Здесь можно добавить логику для сбора данных о пользователе
 	}
 }

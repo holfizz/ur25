@@ -1,5 +1,6 @@
 import { S3Service } from '@/common/services/s3.service'
 import { OfferService } from '@/offer/offer.service'
+import { TelegramClient } from '@/telegram/telegram.client'
 import { TelegramService } from '@/telegram/telegram.service'
 import { MailerModule } from '@nestjs-modules/mailer'
 import { HandlebarsAdapter } from '@nestjs-modules/mailer/dist/adapters/handlebars.adapter'
@@ -61,6 +62,7 @@ import { MailService } from './mail.service'
 		TelegramService,
 		OfferService,
 		S3Service,
+		TelegramClient,
 	],
 })
 export class AuthModule {}

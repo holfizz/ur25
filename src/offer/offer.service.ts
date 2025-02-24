@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common'
 import { S3Service } from '../common/services/s3.service'
 import { PrismaService } from '../prisma.service'
+import { TelegramClient } from '../telegram/telegram.client'
 import { CreateOfferDto } from './dto/create-offer.dto'
 
 @Injectable()
@@ -8,6 +9,7 @@ export class OfferService {
 	constructor(
 		private prisma: PrismaService,
 		private s3Service: S3Service,
+		private telegramClient: TelegramClient,
 	) {}
 
 	async create(
@@ -59,5 +61,65 @@ export class OfferService {
 		await this.prisma.offer.delete({
 			where: { id: offerId },
 		})
+	}
+
+	async verifyOffer(offerId: string) {
+		try {
+			const offer = await this.prisma.offer.update({
+				where: { id: offerId },
+				data: { status: 'ACTIVE' },
+				include: { user: true },
+			})
+
+			// Отправляем уведомление в Telegram
+			if (offer.user.telegramId) {
+				await this.telegramClient.sendMessage(
+					offer.user.telegramId,
+					`✅ Ваше объявление "${offer.title}" было подтверждено модератором и опубликовано!`,
+				)
+			}
+
+			return {
+				success: true,
+				message: 'Offer verified successfully',
+				offer,
+			}
+		} catch (error) {
+			return {
+				success: false,
+				message: 'Failed to verify offer',
+				error: error.message,
+			}
+		}
+	}
+
+	async rejectOffer(offerId: string) {
+		try {
+			const offer = await this.prisma.offer.update({
+				where: { id: offerId },
+				data: { status: 'REJECTED' },
+				include: { user: true },
+			})
+
+			// Отправляем уведомление в Telegram
+			if (offer.user.telegramId) {
+				await this.telegramClient.sendMessage(
+					offer.user.telegramId,
+					`❌ Ваше объявление "${offer.title}" было отклонено модератором.`,
+				)
+			}
+
+			return {
+				success: true,
+				message: 'Offer rejected successfully',
+				offer,
+			}
+		} catch (error) {
+			return {
+				success: false,
+				message: 'Failed to reject offer',
+				error: error.message,
+			}
+		}
 	}
 }
