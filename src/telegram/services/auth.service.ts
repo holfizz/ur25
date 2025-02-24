@@ -4,13 +4,12 @@ import { JwtService } from '@nestjs/jwt'
 import { Role } from '@prisma/client'
 import * as bcrypt from 'bcrypt'
 import { Context } from 'telegraf'
-import { Message } from 'telegraf/types'
 import { PrismaService } from '../../prisma.service'
 import { TelegramClient } from '../telegram.client'
 
 @Injectable()
 export class TelegramAuthService {
-	private registrationStates: Map<number, any> = new Map()
+	public registrationStates: Map<number, any> = new Map()
 	private loginStates: Map<number, { email?: string; password?: string }> =
 		new Map()
 
@@ -21,148 +20,239 @@ export class TelegramAuthService {
 		private configService: ConfigService,
 	) {}
 
-	async handleRegistration(
-		ctx: Context,
-		userId: number,
-		text: string,
-	): Promise<boolean> {
-		const state = this.registrationStates.get(userId)
-		if (!state) return false
+	async handleTextInput(ctx: Context, text: string) {
+		const userId = ctx.from.id
+		const state = this.getRegistrationState(userId)
 
-		// Проверка ИНН если выбран тип пользователя
-		if (state.userType && !state.inn) {
-			if (!/^\d{10}$|^\d{12}$/.test(text)) {
-				await ctx.reply('❌ Неверный формат ИНН. Введите 10 или 12 цифр.')
-				return true
-			}
-
-			try {
-				const isValid = await this.checkInn(text)
-				if (!isValid) {
-					await ctx.reply('❌ ИНН не найден или неактивен. Попробуйте еще раз:')
-					return true
-				}
-
-				state.inn = text
-				state.currentStep = 'email'
-				this.registrationStates.set(userId, state)
-
-				// После успешной проверки ИНН запрашиваем email
-				await ctx.reply('📧 Введите ваш email:\n\n📝 Пример: example@mail.com')
-				return true
-			} catch (error) {
-				console.error('Ошибка при проверке ИНН:', error)
-				await ctx.reply(
-					'❌ Произошла ошибка при проверке ИНН. Попробуйте еще раз.',
-				)
-				return true
-			}
+		if (!state) {
+			console.log(`Состояние регистрации не найдено для пользователя ${userId}`)
+			return
 		}
 
-		// Обработка email
-		if (state.currentStep === 'email' && !state.email) {
+		// Проверка, выбрана ли роль
+		if (!state.role) {
+			await ctx.reply('❓ Выберите вашу роль для регистрации:', {
+				reply_markup: {
+					inline_keyboard: [
+						[
+							{ text: '👤 Покупатель', callback_data: 'role_buyer' },
+							{ text: '🛠️ Поставщик', callback_data: 'role_supplier' },
+							{ text: '🚚 Перевозчик', callback_data: 'role_carrier' },
+						],
+					],
+				},
+			})
+			return
+		}
+
+		// Обработка ввода ИНН
+		if (state.inputType === 'inn') {
+			const isValid = await this.checkInn(text)
+			if (!isValid) {
+				await ctx.reply('❌ ИНН не найден или не активен. Попробуйте еще раз:')
+				return
+			}
+			state.inn = text
+			state.inputType = 'email' // Переход к следующему шагу
+			console.log(`Пользователь ${userId} ввел ИНН: ${text}`)
+			await ctx.reply('✅ ИНН введен верно! Теперь введите ваш email:')
+			this.registrationStates.set(userId, state)
+			return
+		}
+
+		// Логика для обработки email
+		if (state.inputType === 'email') {
 			if (!(await this.validateEmail(text))) {
 				await ctx.reply(
 					'❌ Неверный формат email\n\n📝 Пример: example@mail.com',
 				)
-				return true
+				return
 			}
 			state.email = text
-			state.currentStep = 'password'
-			this.registrationStates.set(userId, state)
+			state.inputType = 'password'
 			await ctx.reply('🔑 Придумайте пароль (минимум 6 символов):')
-			return true
+			this.registrationStates.set(userId, state)
+			return
 		}
 
-		// Обработка пароля
-		if (state.currentStep === 'password' && !state.password) {
+		// Логика для обработки пароля
+		if (state.inputType === 'password') {
 			if (text.length < 6) {
 				await ctx.reply('❌ Пароль должен содержать минимум 6 символов')
-				return true
+				return
 			}
 			state.password = text
-			state.currentStep = 'confirmPassword'
+			state.inputType = 'confirmPassword'
 			this.registrationStates.set(userId, state)
 			await ctx.reply('🔄 Повторите пароль для подтверждения:')
-			return true
+			return
 		}
 
-		// Добавляем обработку подтверждения пароля
-		if (state.currentStep === 'confirmPassword') {
+		// Логика для обработки подтверждения пароля
+		if (state.inputType === 'confirmPassword') {
 			if (text !== state.password) {
 				await ctx.reply('❌ Пароли не совпадают. Введите пароль заново:')
+				state.inputType = 'password'
 				state.password = null
-				state.currentStep = 'password'
 				this.registrationStates.set(userId, state)
 				return
 			}
-
-			state.currentStep = 'name'
+			state.inputType = 'name'
 			this.registrationStates.set(userId, state)
 			await ctx.reply('👤 Введите ваше ФИО:')
-			return true
+			return
 		}
 
-		// Обработка имени
-		if (state.currentStep === 'name' && !state.name) {
-			state.name = text
-			state.currentStep = 'phone'
+		// Логика для обработки ФИО
+		if (state.inputType === 'name') {
+			await this.handleNameInput(ctx, text, state)
 			this.registrationStates.set(userId, state)
-			await ctx.reply('📱 Введите ваш номер телефона в формате +7XXXXXXXXXX:')
-			return true
+			return
 		}
 
-		// Обработка телефона
-		if (state.currentStep === 'phone' && !state.phone) {
-			if (!this.validatePhone(text)) {
-				await ctx.reply(
-					'❌ Неверный формат номера телефона\n\n📝 Пример: +79991234567',
-				)
-				return true
-			}
-			state.phone = text
-			state.currentStep = 'address'
+		if (state.inputType === 'phone') {
+			await this.handlePhoneInput(ctx, text, state)
 			this.registrationStates.set(userId, state)
-			await ctx.reply('📍 Введите адрес:')
-			return true
+			return
 		}
 
-		// Обработка адреса
-		if (state.currentStep === 'address' && !state.address) {
-			state.address = text
+		if (state.inputType === 'mercury') {
+			await this.handleMercuryInput(ctx, text, state)
+			this.registrationStates.set(userId, state)
+			return
+		}
 
-			try {
-				// Создаем запрос на регистрацию с опциональными полями
-				await this.prisma.registrationRequest.create({
-					data: {
-						email: state.email,
-						name: state.name,
-						phone: state.phone,
-						address: state.address,
-						inn: state.inn,
-						role: state.role as Role,
-						userType: state.userType,
-						ogrn: null, // Добавляем null для опциональных полей
-						mercuryNumber: null, // Добавляем null для опциональных полей
-					},
-				})
+		if (state.inputType === 'address') {
+			await this.handleAddressInput(ctx, text, state)
+			this.registrationStates.set(userId, state)
+			return
+		}
 
-				await ctx.reply(
-					'✅ Ваша заявка на регистрацию отправлена на модерацию. Ожидайте подтверждения.',
-				)
-				this.registrationStates.delete(userId)
-			} catch (error) {
-				console.error('Ошибка при регистрации:', error)
-				await ctx.reply('❌ Произошла ошибка при регистрации')
+		// Обработка ИНН/ОГРН
+		if (state.entityType === 'ORGANIZATION') {
+			if (state.inputType === 'inn') {
+				const isValid = await this.checkInn(text)
+				if (!isValid) {
+					await ctx.reply(
+						'❌ ИНН не найден или не активен. Попробуйте еще раз:',
+					)
+					return
+				}
+				state.inn = text
+				state.inputType = 'email'
+				await ctx.reply('✅ ИНН введен верно! Теперь введите ваш email:')
+			} else if (state.inputType === 'ogrn') {
+				const isValid = await this.checkOgrn(text)
+				if (!isValid) {
+					await ctx.reply(
+						'❌ ОГРН не найден или не активен. Попробуйте еще раз:',
+					)
+					return
+				}
+				state.ogrn = text
+				state.inputType = 'email'
+				await ctx.reply('✅ ОГРН введен верно! Теперь введите ваш email:')
 			}
-			return true
 		}
 
-		return false
+		this.registrationStates.set(userId, state)
+	}
+
+	private async handleEmailInput(ctx: Context, text: string, state: any) {
+		if (!(await this.validateEmail(text))) {
+			await ctx.reply('❌ Неверный формат email\n\n📝 Пример: example@mail.com')
+			return
+		}
+		state.email = text
+		state.inputType = 'password'
+		await ctx.reply('🔑 Придумайте пароль (минимум 6 символов):')
+	}
+
+	private async handleNameInput(ctx: Context, text: string, state: any) {
+		state.name = text
+		state.inputType = 'phone'
+		await ctx.reply('📱 Введите ваш номер телефона в формате +7XXXXXXXXXX:')
+	}
+
+	private async handlePhoneInput(ctx: Context, text: string, state: any) {
+		if (!this.validatePhone(text)) {
+			await ctx.reply(
+				'❌ Неверный формат номера телефона\n\n📝 Пример: +79991234567',
+			)
+			return
+		}
+		state.phone = text
+		state.inputType = 'mercury'
+		await ctx.reply(
+			'📋 Введите ваш RU-номер в системе "Меркурий" или нажмите "Пропустить":',
+			{
+				reply_markup: {
+					inline_keyboard: [
+						[{ text: '⏭️ Пропустить', callback_data: 'skip_mercury' }],
+					],
+				},
+			},
+		)
+	}
+
+	private async handleMercuryInput(ctx: Context, text: string, state: any) {
+		state.mercuryNumber = text
+		state.inputType = 'address'
+		await ctx.reply('📍 Введите адрес:')
+	}
+
+	private async handleAddressInput(ctx: Context, text: string, state: any) {
+		state.address = text
+		await this.completeRegistration(ctx, state)
+	}
+
+	private async completeRegistration(ctx: Context, state: any) {
+		try {
+			const existingUser = await this.prisma.user.findUnique({
+				where: { telegramId: ctx.from.id.toString() },
+			})
+
+			if (existingUser) {
+				await ctx.reply('❌ Пользователь с таким Telegram ID уже существует')
+				this.registrationStates.delete(ctx.from.id)
+				return
+			}
+
+			if (!state.role) {
+				await ctx.reply(
+					'❌ Роль пользователя не установлена. Пожалуйста, выберите роль.',
+				)
+				return
+			}
+
+			const user = await this.prisma.user.create({
+				data: {
+					email: state.email,
+					password: await bcrypt.hash('defaultPassword', 10),
+					phone: state.phone,
+					inn: state.inn,
+					ogrn: state.ogrn,
+					role: state.role,
+					name: state.name || 'Не указано',
+					telegramId: ctx.from.id.toString(),
+					mercuryNumber: state.mercuryNumber || null,
+				},
+			})
+
+			await ctx.reply(
+				'✅ Регистрация успешно завершена! Заявка на модерацию отправлена. Вам на почту придет сообщение о том, что вы прошли ее.',
+			)
+			this.registrationStates.delete(ctx.from.id)
+		} catch (error) {
+			console.error('Ошибка при завершении регистрации:', error)
+			await ctx.reply(
+				'❌ Произошла ошибка при регистрации. Попробуйте еще раз.',
+			)
+		}
 	}
 
 	private validatePhone(phone: string): boolean {
-		const phoneRegex = /^\+?[0-9]{10,15}$/ // Пример: +79991234567
+		const phoneRegex = /^\+?[0-9]{10,15}$/
 		return phoneRegex.test(phone)
 	}
 
@@ -178,14 +268,8 @@ export class TelegramAuthService {
 			return false
 		}
 
-		// Проверяем наличие данных о компании
 		if (data && data.company && data.company.company_names) {
-			if (data.company.status && data.company.status.active_status) {
-				return true // ИНН валиден
-			} else {
-				console.error('Компания не активна:', data.company.status)
-				return false // Компания не активна
-			}
+			return data.company.status && data.company.status.active_status
 		} else {
 			console.error('Неизвестный ответ от API:', data)
 			return false
@@ -198,6 +282,7 @@ export class TelegramAuthService {
 
 		const response = await fetch(url)
 		const data = await response.json()
+
 		if (data.code === 1) {
 			console.error('Контрагент не найден:', data.message)
 			return false
@@ -211,75 +296,18 @@ export class TelegramAuthService {
 		}
 	}
 
-	async isUserLoggedIn(userId: number): Promise<boolean> {
-		const user = await this.prisma.user.findUnique({
-			where: { telegramId: userId.toString() },
-		})
-
-		return !!user // Возвращает true, если пользователь найден
+	public getRegistrationState(userId: number) {
+		const state = this.registrationStates.get(userId)
+		console.log(
+			`Получено состояние для пользователя ${userId}: ${JSON.stringify(state)}`,
+		)
+		return state
 	}
 
-	async getActiveUser(userId: number) {
-		return this.prisma.user.findUnique({
-			where: { telegramId: userId.toString() },
-		})
-	}
-
-	async handleLogin(ctx: Context) {
-		const userId = ctx.from.id
-		const loginState = this.loginStates.get(userId)
-
-		if (!loginState) {
-			await ctx.reply(
-				'❌ Вы не находитесь в процессе входа. Пожалуйста, начните заново.',
-			)
-			return
-		}
-
-		const message = ctx.message as Message.TextMessage
-
-		if (!loginState.email) {
-			// Сохраняем email
-			loginState.email = message.text
-			this.loginStates.set(userId, loginState)
-			await ctx.reply('🔑 Введите ваш пароль:')
-			return
-		}
-
-		if (!loginState.password) {
-			// Сохраняем пароль и пытаемся войти
-			loginState.password = message.text
-
-			const loginResult = await this.login({
-				email: loginState.email,
-				password: loginState.password,
-			})
-
-			if (loginResult.success) {
-				await this.telegramClient.handleMenu(ctx)
-				this.deleteLoginState(userId)
-			} else {
-				await ctx.reply(`❌ ${loginResult.message}`)
-				this.deleteLoginState(userId)
-			}
-			return
-		}
-	}
-
-	async handleLogout(ctx: Context) {
-		const userId = ctx.from.id
-		const user = await this.getActiveUser(userId)
-		if (!user) {
-			await ctx.reply('❌ Вы не авторизованы')
-			return
-		}
-
-		await this.prisma.user.update({
-			where: { id: user.id },
-			data: { telegramId: null },
-		})
-
-		await ctx.reply('✅ Вы успешно вышли из аккаунта')
+	public setRole(userId: number, role: string) {
+		const state = this.getRegistrationState(userId)
+		state.role = role
+		this.registrationStates.set(userId, state)
 	}
 
 	async handleRegister(ctx: Context) {
@@ -314,255 +342,15 @@ export class TelegramAuthService {
 			userType: null,
 			inn: null,
 			ogrn: null,
+			role: null,
+			entityType: null,
+			email: null,
+			password: null,
+			name: null,
+			phone: null,
+			mercuryNumber: null,
+			address: null,
 		})
-	}
-
-	public async getRegistrationState(userId: number) {
-		return this.registrationStates.get(userId)
-	}
-
-	async handleRoleSelection(ctx: Context, role: string) {
-		const userId = ctx.from.id
-		const state = this.registrationStates.get(userId) || {}
-		state.role = role
-		this.registrationStates.set(userId, state)
-	}
-
-	async handleUserTypeSelection(ctx: Context, userType: string) {
-		const userId = ctx.from.id
-		const state = this.registrationStates.get(userId) || {}
-		state.userType = userType
-		this.registrationStates.set(userId, state)
-
-		if (userType === 'individual') {
-			await ctx.reply('📝 Введите ваш ИНН:')
-		} else {
-			await ctx.reply('Выберите что хотите ввести:', {
-				reply_markup: {
-					inline_keyboard: [
-						[
-							{ text: '📝 ИНН', callback_data: 'input_inn' },
-							{ text: '📋 ОГРН', callback_data: 'input_ogrn' },
-						],
-					],
-				},
-			})
-		}
-	}
-
-	async handleTextInput(ctx: Context, text: string) {
-		const userId = ctx.from.id
-		const loginState = this.loginStates.get(userId)
-
-		if (loginState) {
-			await this.handleLogin(ctx)
-			return
-		}
-
-		const state = this.registrationStates.get(userId)
-
-		if (!state) {
-			return
-		}
-
-		// Если ожидаем ИНН/ОГРН
-		if (state.userType && !state.inn && !state.ogrn) {
-			if (state.inputType === 'inn') {
-				// Проверяем формат ИНН
-				const innPattern =
-					state.userType === 'individual' ? /^\d{12}$/ : /^\d{10}$/
-				if (!innPattern.test(text)) {
-					await ctx.reply(
-						state.userType === 'individual'
-							? '❌ Неверный формат ИНН. Для физических лиц требуется 12 цифр.'
-							: '❌ Неверный формат ИНН. Для организаций требуется 10 цифр.',
-					)
-					return
-				}
-
-				try {
-					const isValidInn = await this.checkInn(text)
-					if (!isValidInn) {
-						await ctx.reply(
-							'❌ ИНН не найден или не активен. Попробуйте еще раз:',
-						)
-						return
-					}
-
-					state.inn = text
-					state.currentStep = 'email'
-					this.registrationStates.set(userId, state)
-					console.log(`Пользователь ${userId} ввел ИНН: ${text}`)
-
-					await ctx.reply('✅ ИНН введен верно! Теперь введите ваш email:')
-					await ctx.reply(
-						'📧 Введите ваш email:\n\n📝 Пример: example@mail.com',
-					)
-					return
-				} catch (error) {
-					console.error('Ошибка при проверке ИНН:', error)
-					await ctx.reply(
-						'❌ Произошла ошибка при проверке ИНН. Попробуйте еще раз:',
-					)
-					return
-				}
-			} else if (state.inputType === 'ogrn') {
-				// Проверяем формат ОГРН (13 цифр)
-				if (!/^\d{13}$/.test(text)) {
-					await ctx.reply('❌ Неверный формат ОГРН. Требуется 13 цифр.')
-					return
-				}
-
-				try {
-					const isValidOgrn = await this.checkOgrn(text)
-					if (!isValidOgrn) {
-						await ctx.reply(
-							'❌ ОГРН не найден или не активен. Попробуйте еще раз:',
-						)
-						return
-					}
-
-					state.ogrn = text
-					state.currentStep = 'email'
-					this.registrationStates.set(userId, state)
-					console.log(`Пользователь ${userId} ввел ОГРН: ${text}`)
-
-					await ctx.reply('✅ ОГРН введен верно! Теперь введите ваш email:')
-					await ctx.reply(
-						'📧 Введите ваш email:\n\n📝 Пример: example@mail.com',
-					)
-					return
-				} catch (error) {
-					console.error('Ошибка при проверке ОГРН:', error)
-					await ctx.reply(
-						'❌ Произошла ошибка при проверке ОГРН. Попробуйте еще раз:',
-					)
-					return
-				}
-			}
-		}
-
-		// Обработка email
-		if (state.currentStep === 'email' && !state.email) {
-			if (!(await this.validateEmail(text))) {
-				await ctx.reply(
-					'❌ Неверный формат email\n\n📝 Пример: example@mail.com',
-				)
-				return
-			}
-			state.email = text
-			state.currentStep = 'password'
-			this.registrationStates.set(userId, state)
-			await ctx.reply('🔑 Придумайте пароль (минимум 6 символов):')
-			return
-		}
-
-		// Обработка пароля
-		if (state.currentStep === 'password' && !state.password) {
-			if (text.length < 6) {
-				await ctx.reply('❌ Пароль должен содержать минимум 6 символов')
-				return
-			}
-			state.password = text
-			state.currentStep = 'confirmPassword'
-			this.registrationStates.set(userId, state)
-			await ctx.reply('🔄 Повторите пароль для подтверждения:')
-			return
-		}
-
-		// Добавляем обработку подтверждения пароля
-		if (state.currentStep === 'confirmPassword') {
-			if (text !== state.password) {
-				await ctx.reply('❌ Пароли не совпадают. Введите пароль заново:')
-				state.password = null
-				state.currentStep = 'password'
-				this.registrationStates.set(userId, state)
-				return
-			}
-
-			state.currentStep = 'name'
-			this.registrationStates.set(userId, state)
-			await ctx.reply('👤 Введите ваше ФИО:')
-			return
-		}
-
-		// Обработка имени
-		if (state.currentStep === 'name' && !state.name) {
-			state.name = text
-			state.currentStep = 'phone'
-			this.registrationStates.set(userId, state)
-			await ctx.reply('📱 Введите ваш номер телефона в формате +7XXXXXXXXXX:')
-			return
-		}
-
-		// Обработка телефона
-		if (state.currentStep === 'phone' && !state.phone) {
-			if (!this.validatePhone(text)) {
-				await ctx.reply(
-					'❌ Неверный формат номера телефона. Введите в формате +7XXXXXXXXXX',
-				)
-				return
-			}
-			state.phone = text
-			state.currentStep = 'mercury'
-			this.registrationStates.set(userId, state)
-			await ctx.reply('📋 Введите ваш RU-номер в системе "Меркурий":')
-			return
-		}
-
-		// Обработка номера в системе "Меркурий"
-		if (state.currentStep === 'mercury' && !state.mercuryNumber) {
-			state.mercuryNumber = text
-			state.currentStep = 'location'
-			this.registrationStates.set(userId, state)
-			await ctx.reply('📍 Введите адрес фермы размещения скота:')
-			return
-		}
-
-		// Обработка адреса фермы
-		if (state.currentStep === 'location' && !state.location) {
-			state.location = text
-			state.currentStep = 'complete'
-			this.registrationStates.set(userId, state)
-
-			// Завершение регистрации
-			try {
-				await this.completeRegistration(ctx, state)
-				this.registrationStates.delete(userId) // Очищаем состояние после успешной регистрации
-			} catch (error) {
-				console.error('Ошибка при завершении регистрации:', error)
-				await ctx.reply(
-					'❌ Произошла ошибка при регистрации. Попробуйте еще раз.',
-				)
-			}
-			return
-		}
-	}
-
-	private async completeRegistration(ctx: Context, state: any) {
-		try {
-			const user = await this.prisma.user.create({
-				data: {
-					email: state.email,
-					password: await bcrypt.hash(state.password, 10),
-					phone: state.phone,
-					mercuryNumber: state.mercuryNumber,
-					address: state.location,
-					inn: state.inn,
-					ogrn: state.ogrn,
-					role: state.role,
-					name: state.name || 'Не указано',
-					telegramId: ctx.from.id.toString(),
-				},
-			})
-
-			await ctx.reply('✅ Регистрация успешно завершена!')
-		} catch (error) {
-			console.error('Ошибка при завершении регистрации:', error)
-			await ctx.reply(
-				'❌ Произошла ошибка при регистрации. Попробуйте еще раз.',
-			)
-		}
 	}
 
 	public getLoginState(userId: number) {
@@ -608,5 +396,136 @@ export class TelegramAuthService {
 		}
 
 		return { success: true, user }
+	}
+
+	async handleLogout(ctx: Context) {
+		const userId = ctx.from.id
+		const user = await this.getActiveUser(userId)
+		if (!user) {
+			await ctx.reply('❌ Вы не авторизованы')
+			return
+		}
+
+		await this.prisma.user.update({
+			where: { id: user.id },
+			data: { telegramId: null },
+		})
+
+		await ctx.reply('✅ Вы успешно вышли из аккаунта')
+	}
+
+	async getActiveUser(userId: number) {
+		return this.prisma.user.findUnique({
+			where: { telegramId: userId.toString() },
+		})
+	}
+
+	async handleRoleSelection(ctx: Context, role: string) {
+		const userId = ctx.from.id
+		const state = this.getRegistrationState(userId)
+		state.role = role
+
+		await ctx.reply('✅ Роль выбрана! Теперь выберите тип регистрации:', {
+			reply_markup: {
+				inline_keyboard: [
+					[
+						{ text: '🏢 Организация', callback_data: 'type_organization' },
+						{ text: '👤 Физическое лицо', callback_data: 'type_individual' },
+					],
+				],
+			},
+		})
+
+		this.registrationStates.set(userId, state)
+	}
+
+	async handleUserTypeSelection(ctx: Context, userType: string) {
+		const userId = ctx.from.id
+		const state = this.getRegistrationState(userId)
+		state.entityType = userType
+
+		await ctx.reply('Введите ваш ИНН или ОГРН:', {
+			reply_markup: {
+				inline_keyboard: [
+					[
+						{ text: '📝 Ввести ИНН', callback_data: 'input_inn' },
+						{ text: '📋 Ввести ОГРН', callback_data: 'input_ogrn' },
+					],
+				],
+			},
+		})
+
+		this.registrationStates.set(userId, state)
+	}
+
+	public setBuyerType(userId: number, buyerType: string) {
+		const state = this.getRegistrationState(userId)
+		if (state) {
+			state.buyerType = buyerType
+			this.registrationStates.set(userId, state)
+		}
+	}
+
+	public async isUserLoggedIn(userId: number): Promise<boolean> {
+		const user = await this.prisma.user.findUnique({
+			where: { telegramId: userId.toString() },
+		})
+		return user !== null // Если пользователь найден, значит он вошел в систему
+	}
+
+	public setEntityType(userId: number, entityType: string) {
+		const state = this.getRegistrationState(userId)
+		if (state) {
+			state.entityType = entityType
+			this.registrationStates.set(userId, state)
+		}
+	}
+
+	async handleStart(ctx: Context) {
+		await ctx.reply(' Пожалуйста, выберите вашу роль для регистрации:', {
+			reply_markup: {
+				inline_keyboard: [
+					[
+						{ text: '👤 Покупатель', callback_data: 'role_buyer' },
+						{ text: '🛠️ Поставщик', callback_data: 'role_supplier' },
+					],
+					[{ text: '🚚 Перевозчик', callback_data: 'role_carrier' }],
+				],
+			},
+		})
+	}
+
+	async handleRegisterCommand(ctx: Context) {
+		const userId = ctx.from.id
+		await this.startRegistration(userId)
+		await this.handleStart(ctx)
+	}
+
+	async setInputType(ctx: Context, inputType: string) {
+		const userId = ctx.from.id
+		const state = this.getRegistrationState(userId)
+
+		if (!state) return
+
+		state.inputType = inputType
+		this.registrationStates.set(userId, state)
+
+		if (inputType === 'inn') {
+			await ctx.reply('📝 Введите ваш ИНН:')
+		} else if (inputType === 'ogrn') {
+			await ctx.reply('📋 Введите ваш ОГРН:')
+		}
+	}
+
+	async handleSkipMercury(ctx: Context) {
+		const userId = ctx.from.id
+		const state = this.getRegistrationState(userId)
+
+		// Устанавливаем состояние, что номер в системе "Меркурий" пропущен
+		state.mercuryNumber = null // Или любое другое значение, которое вы хотите установить
+		state.inputType = 'address' // Переход к следующему шагу
+		this.registrationStates.set(userId, state)
+
+		await ctx.reply('📍 Введите адрес:')
 	}
 }

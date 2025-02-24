@@ -1,7 +1,9 @@
 import { OfferService } from '@/offer/offer.service'
 import { Injectable } from '@nestjs/common'
 import { Context, Markup, Telegraf } from 'telegraf'
+import { Message } from 'telegraf/typings/core/types/typegram'
 import { PrismaService } from '../prisma.service'
+import { TelegramAuthService } from './services/auth.service'
 
 @Injectable()
 export class TelegramService {
@@ -10,6 +12,7 @@ export class TelegramService {
 	constructor(
 		private readonly prisma: PrismaService,
 		private readonly offerService: OfferService,
+		private readonly authService: TelegramAuthService,
 	) {
 		this.bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN)
 	}
@@ -21,19 +24,17 @@ export class TelegramService {
 		})
 
 		if (!user) {
-			await ctx.reply(
-				'👋 Добро пожаловать на нашу площадку для торговли КРС (крупного рогатого скота)! Пожалуйста, выберите действие:',
-				{
-					reply_markup: {
-						inline_keyboard: [
-							[
-								{ text: '📝 Регистрация', callback_data: 'register' },
-								{ text: '🔑 Войти', callback_data: 'login' },
-							],
+			await ctx.reply('Пожалуйста, выберите вашу роль для регистрации:', {
+				reply_markup: {
+					inline_keyboard: [
+						[
+							{ text: '👤 Покупатель', callback_data: 'role_buyer' },
+							{ text: '🛠️ Поставщик', callback_data: 'role_supplier' },
+							{ text: '🚚 Перевозчик', callback_data: 'role_carrier' },
 						],
-					},
+					],
 				},
-			)
+			})
 			return
 		}
 
@@ -98,7 +99,9 @@ export class TelegramService {
 		})
 	}
 
-	async sendVerificationNotification(telegramId: string) {
+	async sendVerificationNotification(
+		telegramId: string,
+	): Promise<Message.TextMessage> {
 		const message = await this.bot.telegram.sendMessage(
 			telegramId,
 			'✅ Ваш аккаунт успешно верифицирован!',
@@ -189,5 +192,40 @@ ${
 	async handleRegistration(ctx: Context) {
 		await ctx.reply('Введите ваше имя:')
 		// Здесь можно добавить логику для сбора данных о пользователе
+	}
+
+	async handleCallbackQuery(ctx: Context) {
+		//@ts-ignore
+		const callbackData = ctx.callbackQuery.data
+		await ctx.answerCbQuery() // Подтверждение нажатия кнопки
+
+		if (callbackData.startsWith('role_')) {
+			const role = callbackData.split('_')[1]
+			await this.authService.handleRoleSelection(ctx, role)
+		} else if (callbackData.startsWith('type_')) {
+			const userType = callbackData.split('_')[1]
+			await this.authService.handleUserTypeSelection(ctx, userType)
+		} else if (callbackData === 'skip_mercury') {
+			await this.authService.handleSkipMercury(ctx)
+		}
+
+		// Другие обработчики...
+	}
+
+	async handleRegisterCommand(ctx: Context) {
+		const userId = ctx.from.id
+		await this.authService.startRegistration(userId) // Инициализация состояния
+
+		await ctx.reply('❓ Выберите вашу роль для регистрации:', {
+			reply_markup: {
+				inline_keyboard: [
+					[
+						{ text: '👤 Покупатель', callback_data: 'role_buyer' },
+						{ text: '🛠️ Поставщик', callback_data: 'role_supplier' },
+						{ text: '🚚 Перевозчик', callback_data: 'role_carrier' },
+					],
+				],
+			},
+		})
 	}
 }

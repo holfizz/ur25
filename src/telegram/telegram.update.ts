@@ -1,4 +1,4 @@
-import { Command, Ctx, On, Start, Update } from 'nestjs-telegraf'
+import { Action, Ctx, On, Start, Update } from 'nestjs-telegraf'
 import { Context } from 'telegraf'
 import { CallbackQuery, Message } from 'telegraf/typings/core/types/typegram'
 import { TelegramAuthService } from './services/auth.service'
@@ -36,53 +36,53 @@ export class TelegramUpdate {
 		)
 	}
 
-	@Command('register')
+	@Action('register')
 	async handleRegisterCommand(@Ctx() ctx: Context) {
 		const userId = ctx.from.id
 		await this.authService.startRegistration(userId)
-		await ctx.reply('Выберите вашу роль для регистрации:', {
+
+		await ctx.reply('Пожалуйста, выберите вашу роль для регистрации:', {
 			reply_markup: {
 				inline_keyboard: [
 					[
-						{ text: '👤 Покупатель', callback_data: 'role_BUYER' },
-						{ text: '🛠 Поставщик', callback_data: 'role_SUPPLIER' },
+						{ text: '👤 Покупатель', callback_data: 'role_buyer' },
+						{ text: '🛠️ Поставщик', callback_data: 'role_supplier' },
 					],
-					[{ text: '🚚 Перевозчик', callback_data: 'role_CARRIER' }],
+					[{ text: '🚚 Перевозчик', callback_data: 'role_carrier' }],
 				],
 			},
 		})
 	}
 
+	@Action(/role_.*/)
+	async handleRoleSelection(@Ctx() ctx: Context) {
+		const callbackQuery = ctx.callbackQuery
+		//@ts-ignore
+		const role = callbackQuery.data.split('_')[1]
+		await this.authService.handleRoleSelection(ctx, role)
+	}
+
+	@Action(/type_.*/)
+	async handleUserTypeSelection(@Ctx() ctx: Context) {
+		const callbackQuery = ctx.callbackQuery
+		//@ts-ignore
+		const userType = callbackQuery.data.split('_')[1]
+		await this.authService.handleUserTypeSelection(ctx, userType)
+	}
+
+	@Action(/input_.*/)
+	async handleInputTypeSelection(@Ctx() ctx: Context) {
+		const callbackQuery = ctx.callbackQuery
+		//@ts-ignore
+		const inputType = callbackQuery.data.split('_')[1]
+		await this.authService.setInputType(ctx, inputType)
+	}
+
 	@On('text')
-	async onText(@Ctx() ctx: Context) {
-		const message = ctx.message as Message.TextMessage
-		const userId = ctx.from.id
-
-		const offerState = this.offerService.getOfferState(userId)
-		if (offerState) {
-			// Передаем обработку текста в handleOfferState
-			await this.offerService.handleOfferState(ctx, userId, message.text)
-			return
+	async handleText(@Ctx() ctx: Context) {
+		if ('text' in ctx.message) {
+			await this.authService.handleTextInput(ctx, ctx.message.text)
 		}
-
-		const loginState = this.authService.getLoginState(userId)
-
-		if (loginState) {
-			const loginResult = await this.authService.login({
-				email: loginState.email,
-				password: message.text,
-			})
-
-			if (loginResult.success) {
-				await this.telegramService.handleMenu(ctx) // Показываем меню
-				this.authService.deleteLoginState(userId) // Удаляем состояние входа
-			} else {
-				await ctx.reply(`❌ ${loginResult.message}`)
-			}
-			return
-		}
-
-		await this.authService.handleTextInput(ctx, message.text)
 	}
 
 	@On('callback_query')
@@ -93,15 +93,13 @@ export class TelegramUpdate {
 		const userId = ctx.from.id
 
 		if (query.data === 'create_offer') {
-			// Логика для возврата к созданию объявления
-			this.offerService.setOfferState(userId, {}) // Сброс состояния
+			this.offerService.setOfferState(userId, {})
 			await ctx.reply(
 				'🔙 Вы вернулись к созданию объявления. Пожалуйста, введите название объявления:',
 			)
 			return
 		}
 
-		// Обработка входа
 		if (query.data === 'login') {
 			const isLoggedIn = await this.authService.isUserLoggedIn(userId)
 			if (isLoggedIn) {
@@ -115,13 +113,11 @@ export class TelegramUpdate {
 			return
 		}
 
-		// Обработка выхода
 		if (query.data === 'logout') {
 			await this.authService.handleLogout(ctx)
 			return
 		}
 
-		// Обработка действий меню
 		switch (query.data) {
 			case 'create_ad':
 				await this.offerService.handleCreateOffer(ctx)
@@ -153,7 +149,6 @@ export class TelegramUpdate {
 		const userId = ctx.from.id
 
 		try {
-			// Получаем состояние создания объявления
 			const offerState = await this.offerService.getOfferState(userId)
 
 			if (!offerState) {
@@ -161,14 +156,11 @@ export class TelegramUpdate {
 				return
 			}
 
-			// Получаем файл с наилучшим качеством (последний в массиве)
 			const photo = photos[photos.length - 1]
 
-			// Получаем информацию о файле
 			const file = await ctx.telegram.getFile(photo.file_id)
 			const fileUrl = `https://api.telegram.org/file/bot${process.env.TELEGRAM_BOT_TOKEN}/${file.file_path}`
 
-			// Сохраняем фото в S3 и добавляем URL в состояние
 			await this.offerService.handlePhotoUpload(ctx, fileUrl, userId)
 		} catch (error) {
 			console.error('Ошибка при обработке фото:', error)
