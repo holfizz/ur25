@@ -4,10 +4,7 @@ import { ConfigService } from '@nestjs/config'
 import { CattlePurpose, CattleType, PriceType } from '@prisma/client'
 import fetch from 'node-fetch'
 import { Context, Markup } from 'telegraf'
-import {
-	CallbackQuery,
-	InputMediaPhoto,
-} from 'telegraf/typings/core/types/typegram'
+import { CallbackQuery } from 'telegraf/typings/core/types/typegram'
 import { S3Service } from '../../common/services/s3.service'
 import { PrismaService } from '../../prisma.service'
 import { TelegramClient } from '../telegram.client'
@@ -115,60 +112,90 @@ export class TelegramOfferService {
 		)
 	}
 
-	async handlePhotoUpload(ctx: Context, fileUrl: string, userId: number) {
-		const user = await this.prisma.user.findUnique({
-			where: { telegramId: userId.toString() },
-		})
-
-		if (!user || user.role !== 'SUPPLIER') {
-			await ctx.reply('❌ У вас нет прав для создания объявлений.')
-			return
-		}
-
-		const state = this.offerStates.get(userId)
-		if (!state) {
-			await ctx.reply('❌ Начните создание объявления заново')
-			return
-		}
-
-		const totalFiles = state.photos.length + state.videos.length
-		if (totalFiles >= 5) {
-			await ctx.reply('❌ Достигнут лимит медиафайлов (максимум 5)')
-			return
-		}
-
+	async handlePhotoUpload(ctx: Context) {
 		try {
-			// Загружаем фото в S3
-			const uploadResult = await this.s3Service.uploadFile({
-				buffer: Buffer.from(await (await fetch(fileUrl)).arrayBuffer()),
+			const userId = ctx.from.id
+			const state = this.getOfferState(userId)
+
+			if (!state) {
+				await ctx.reply('❌ Начните создание объявления заново')
+				return
+			}
+
+			// Проверяем лимит файлов
+			const totalFiles =
+				(state.photos?.length || 0) + (state.videos?.length || 0)
+			if (totalFiles >= 5) {
+				await ctx.reply('❌ Достигнут лимит медиафайлов (максимум 5)')
+				return
+			}
+
+			// Получаем фотографию с наилучшим качеством
+			const message = ctx.message
+			if (!('photo' in message)) {
+				await ctx.reply('❌ Не удалось получить фотографию')
+				return
+			}
+
+			const photos = message.photo
+			const bestPhoto = photos[photos.length - 1]
+			const fileId = bestPhoto.file_id
+
+			// Получаем информацию о файле
+			const fileInfo = await ctx.telegram.getFile(fileId)
+			const fileUrl = `https://api.telegram.org/file/bot${this.configService.get('TELEGRAM_BOT_TOKEN')}/${fileInfo.file_path}`
+
+			// Загружаем файл в буфер
+			const response = await fetch(fileUrl)
+			const buffer = await response.buffer()
+
+			// Создаем объект файла для загрузки в S3
+			const file: UploadedFile = {
+				buffer,
 				originalname: `photo_${Date.now()}.jpg`,
 				mimetype: 'image/jpeg',
-				fieldname: 'file',
+				fieldname: 'photo',
 				encoding: '7bit',
-				size: 0,
-			})
+				size: buffer.length,
+			}
 
+			// Загружаем файл в S3
+			const uploadedFile = await this.s3Service.uploadFile(file)
+
+			// Добавляем фотографию в состояние
+			if (!state.photos) {
+				state.photos = []
+			}
 			state.photos.push({
-				url: uploadResult.url,
-				key: uploadResult.key,
+				url: uploadedFile.url,
+				key: uploadedFile.key,
 			})
 
-			this.offerStates.set(userId, state)
+			this.updateOfferState(userId, state)
 
+			// Обновляем счетчик файлов
+			const newTotalFiles =
+				(state.photos?.length || 0) + (state.videos?.length || 0)
+			const remainingFiles = 5 - newTotalFiles
+
+			// Отправляем сообщение о загрузке фотографии
 			await ctx.reply(
-				`✅ Фото ${totalFiles + 1}/5 загружено\n\nДобавьте еще медиафайлы или нажмите "Продолжить"`,
+				`✅ Фотография загружена (${newTotalFiles}/5)\n\n${
+					remainingFiles > 0
+						? `Вы можете загрузить еще ${remainingFiles} медиафайл(ов) или нажать кнопку "Готово" для продолжения.`
+						: 'Достигнут лимит медиафайлов. Нажмите "Готово" для продолжения.'
+				}`,
 				{
 					reply_markup: {
 						inline_keyboard: [
-							[{ text: '➡️ Продолжить', callback_data: 'media_done' }],
-							[{ text: '« Отмена', callback_data: 'menu' }],
+							[{ text: '✅ Готово', callback_data: 'media_done' }],
 						],
 					},
 				},
 			)
 		} catch (error) {
-			console.error('Ошибка при загрузке фото:', error)
-			await ctx.reply('❌ Произошла ошибка при загрузке фото')
+			console.error('Ошибка при загрузке фотографии:', error)
+			await ctx.reply('❌ Произошла ошибка при загрузке фотографии')
 		}
 	}
 
@@ -198,6 +225,77 @@ export class TelegramOfferService {
 
 			case 'title':
 				state.title = text
+				state.inputType = 'description'
+				this.offerStates.set(userId, state)
+				await ctx.reply('📝 Введите описание объявления:')
+				break
+
+			case 'description':
+				state.description = text
+				state.inputType = 'cattle_type'
+				this.offerStates.set(userId, state)
+
+				// Запрашиваем тип КРС через кнопки
+				await ctx.reply('🐮 Выберите тип КРС:', {
+					reply_markup: {
+						inline_keyboard: [
+							[
+								{ text: '🐄 Телята', callback_data: 'cattle_type_CALVES' },
+								{ text: '🐂 Бычки', callback_data: 'cattle_type_BULL_CALVES' },
+							],
+							[
+								{ text: '🐄 Телки', callback_data: 'cattle_type_HEIFERS' },
+								{
+									text: '🐄 Нетели',
+									callback_data: 'cattle_type_BREEDING_HEIFERS',
+								},
+							],
+							[
+								{ text: '🐂 Быки', callback_data: 'cattle_type_BULLS' },
+								{ text: '🐄 Коровы', callback_data: 'cattle_type_COWS' },
+							],
+						],
+					},
+				})
+				break
+
+			case 'breed':
+				state.breed = text
+				state.inputType = 'purpose'
+				this.offerStates.set(userId, state)
+
+				// Запрашиваем назначение через кнопки
+				await ctx.reply('🎯 Выберите назначение КРС:', {
+					reply_markup: {
+						inline_keyboard: [
+							[
+								{ text: '🏪 Товарный', callback_data: 'purpose_COMMERCIAL' },
+								{ text: '🧬 Племенной', callback_data: 'purpose_BREEDING' },
+							],
+						],
+					},
+				})
+				break
+
+			case 'price_per_head':
+				const pricePerHead = parseFloat(text)
+				if (isNaN(pricePerHead) || pricePerHead <= 0) {
+					await ctx.reply('❌ Введите корректную цену (число больше 0)')
+					return
+				}
+				state.pricePerHead = pricePerHead
+				state.inputType = 'quantity'
+				this.offerStates.set(userId, state)
+				await ctx.reply('🔢 Введите количество голов:')
+				break
+
+			case 'price_per_kg':
+				const pricePerKg = parseFloat(text)
+				if (isNaN(pricePerKg) || pricePerKg <= 0) {
+					await ctx.reply('❌ Введите корректную цену (число больше 0)')
+					return
+				}
+				state.pricePerKg = pricePerKg
 				state.inputType = 'quantity'
 				this.offerStates.set(userId, state)
 				await ctx.reply('🔢 Введите количество голов:')
@@ -238,70 +336,6 @@ export class TelegramOfferService {
 					return
 				}
 				state.age = age
-				state.inputType = 'cattle_type'
-				this.offerStates.set(userId, state)
-
-				// Запрашиваем тип КРС через кнопки
-				await ctx.reply('🐮 Выберите тип КРС:', {
-					reply_markup: {
-						inline_keyboard: [
-							[
-								{ text: '🥛 Телята', callback_data: 'cattle_type_CALVES' },
-								{ text: '🐂 Бычки', callback_data: 'cattle_type_BULL_CALVES' },
-							],
-							[
-								{ text: '🐄 Телки', callback_data: 'cattle_type_HEIFERS' },
-								{
-									text: '�� Нетели',
-									callback_data: 'cattle_type_BREEDING_HEIFERS',
-								},
-							],
-							[
-								{ text: '🦬 Быки', callback_data: 'cattle_type_BULLS' },
-								{ text: '🐄 Коровы', callback_data: 'cattle_type_COWS' },
-							],
-						],
-					},
-				})
-				break
-
-			case 'breed':
-				state.breed = text
-				state.inputType = 'purpose'
-				this.offerStates.set(userId, state)
-
-				// Запрашиваем назначение через кнопки
-				await ctx.reply('🎯 Выберите назначение КРС:', {
-					reply_markup: {
-						inline_keyboard: [
-							[
-								{ text: '🏪 Товарный', callback_data: 'purpose_COMMERCIAL' },
-								{ text: '🧬 Племенной', callback_data: 'purpose_BREEDING' },
-							],
-						],
-					},
-				})
-				break
-
-			case 'region':
-				state.region = text
-				state.inputType = 'description'
-				this.offerStates.set(userId, state)
-				await ctx.reply('📝 Введите дополнительное описание:')
-				break
-
-			case 'description':
-				state.description = text
-				await this.createOffer(ctx, state)
-				break
-
-			case 'price_per_head':
-				const pricePerHead = parseFloat(text)
-				if (isNaN(pricePerHead) || pricePerHead <= 0) {
-					await ctx.reply('❌ Введите корректную цену (число больше 0)')
-					return
-				}
-				state.pricePerHead = pricePerHead
 				state.inputType = 'ask_gkt_discount'
 				this.offerStates.set(userId, state)
 
@@ -310,8 +344,8 @@ export class TelegramOfferService {
 					reply_markup: {
 						inline_keyboard: [
 							[
-								{ text: '✅ Да', callback_data: 'gkt_yes' },
-								{ text: '❌ Нет', callback_data: 'gkt_no' },
+								{ text: '✅ Да', callback_data: 'gut_yes' },
+								{ text: '❌ Нет', callback_data: 'gut_no' },
 							],
 						],
 					},
@@ -330,29 +364,29 @@ export class TelegramOfferService {
 				await ctx.reply('📍 Введите регион:')
 				break
 
-			case 'full_address':
-				state.fullAddress = text
+			case 'region':
+				state.region = text
 				state.inputType = 'customs_union'
+				this.offerStates.set(userId, state)
+
+				// Спрашиваем о Таможенном Союзе
 				await ctx.reply('Состоит ли в Реестре Таможенного Союза?', {
 					reply_markup: {
 						inline_keyboard: [
 							[
-								{ text: 'Да', callback_data: 'customs_yes' },
-								{ text: 'Нет', callback_data: 'customs_no' },
+								{ text: '✅ Да', callback_data: 'customs_yes' },
+								{ text: '❌ Нет', callback_data: 'customs_no' },
 							],
 						],
 					},
 				})
 				break
 
-			case 'video_url':
-				state.videoUrl = text
-				state.inputType = 'description'
-				await ctx.reply('📝 Введите дополнительное описание:')
+			case 'full_address':
+				state.fullAddress = text
+				await this.createOffer(ctx, state)
 				break
 		}
-
-		this.offerStates.set(userId, state)
 	}
 
 	async createOffer(ctx: Context, state: OfferState) {
@@ -367,37 +401,70 @@ export class TelegramOfferService {
 				return
 			}
 
+			// Проверяем, что тип КРС соответствует допустимым значениям
+			const validCattleTypes = [
+				'CALVES',
+				'BULL_CALVES',
+				'HEIFERS',
+				'BREEDING_HEIFERS',
+				'BULLS',
+				'COWS',
+			]
+
+			if (!state.cattleType || !validCattleTypes.includes(state.cattleType)) {
+				// Если тип КРС недопустимый, устанавливаем значение по умолчанию
+				state.cattleType = 'CALVES'
+			}
+
+			// Подготавливаем данные для создания объявления
+			const offerData = {
+				user: { connect: { id: user.id } },
+				title: state.title,
+				description: state.description,
+				quantity: state.quantity,
+				age: state.age,
+				weight: state.weight,
+				breed: state.breed,
+				status: 'PENDING',
+				mercuryNumber: state.mercuryNumber,
+				contactPerson: state.contactPerson,
+				contactPhone: state.contactPhone,
+				cattleType: state.cattleType,
+				purpose: state.purpose || CattlePurpose.COMMERCIAL,
+				priceType: state.priceType || PriceType.PER_HEAD,
+				pricePerKg: state.pricePerKg || 0,
+				pricePerHead: state.pricePerHead || 0,
+				gktDiscount: state.gktDiscount || 0,
+				region: state.region || state.location,
+				location: state.region || '',
+				fullAddress: state.fullAddress || state.region,
+				customsUnion: state.customsUnion || false,
+				// Используем URL первого видео, если есть
+				videoUrl:
+					state.videos && state.videos.length > 0 ? state.videos[0].url : '',
+				price: state.pricePerHead || state.pricePerKg || 0,
+			}
+
+			// Добавляем фотографии, если они есть
+			if (state.photos && state.photos.length > 0) {
+				offerData['images'] = {
+					create: state.photos.map(photo => ({
+						url: photo.url,
+						key: photo.key,
+					})),
+				}
+			}
+
+			console.log(
+				'Создание объявления с данными:',
+				JSON.stringify(offerData, null, 2),
+			)
+
+			// Создаем объявление в базе данных
 			const offer = await this.prisma.offer.create({
-				data: {
-					user: { connect: { id: user.id } },
-					title: state.title,
-					description: state.description,
-					price: state.price,
-					quantity: state.quantity,
-					age: state.age,
-					weight: state.weight,
-					location: state.location,
-					breed: state.breed,
-					status: 'PENDING',
-					mercuryNumber: state.mercuryNumber,
-					contactPerson: state.contactPerson,
-					contactPhone: state.contactPhone,
-					cattleType: state.cattleType || CattleType.CALVES,
-					purpose: state.purpose || CattlePurpose.COMMERCIAL,
-					priceType: state.priceType || PriceType.PER_HEAD,
-					pricePerKg: state.pricePerKg || 0,
-					pricePerHead: state.pricePerHead || 0,
-					gktDiscount: state.gktDiscount || 0,
-					region: state.region || state.location,
-					fullAddress: state.fullAddress || state.location,
-					customsUnion: false,
-					videoUrl: state.videoUrl,
-					images: {
-						create: state.photos.map(photo => ({
-							url: photo.url,
-							key: photo.key,
-						})),
-					},
+				data: offerData,
+				include: {
+					images: true,
 				},
 			})
 
@@ -801,74 +868,184 @@ ${
 	}
 
 	async handleViewOffer(ctx: Context) {
-		const callbackQuery = ctx.callbackQuery as CallbackQuery.DataQuery
-		const offerId = callbackQuery.data.split('_')[2]
+		try {
+			const callbackQuery = ctx.callbackQuery as CallbackQuery.DataQuery
+			const offerId = callbackQuery.data.replace('view_offer_', '')
 
-		const offer = await this.prisma.offer.findUnique({
-			where: { id: offerId },
-			include: { images: true },
-		})
+			// Отправляем сообщение о загрузке
+			const loadingMessage = await ctx.reply('⏳ Загрузка объявления...')
 
-		if (!offer) {
-			await ctx.reply('❌ Объявление не найдено или было удалено', {
-				reply_markup: {
-					inline_keyboard: [
-						[{ text: '« Назад', callback_data: 'browse_offers' }],
-					],
-				},
+			const offer = await this.prisma.offer.findUnique({
+				where: { id: offerId },
+				include: { images: true },
 			})
-			return
+
+			if (!offer) {
+				await ctx.telegram.editMessageText(
+					ctx.chat.id,
+					loadingMessage.message_id,
+					undefined,
+					'❌ Объявление не найдено',
+				)
+				return
+			}
+
+			// Формируем текст объявления
+			const offerText = this.formatOfferText(offer)
+
+			try {
+				// Удаляем сообщение о загрузке
+				await ctx.telegram.deleteMessage(ctx.chat.id, loadingMessage.message_id)
+
+				// 1. Сначала отправляем видео, если оно есть
+				if (offer.videoUrl && offer.videoUrl !== '-') {
+					const videoLoadingMsg = await ctx.reply('🎥 Загрузка видео...')
+
+					try {
+						if (
+							offer.videoUrl.includes('youtube.com') ||
+							offer.videoUrl.includes('youtu.be')
+						) {
+							await ctx.telegram.deleteMessage(
+								ctx.chat.id,
+								videoLoadingMsg.message_id,
+							)
+							await ctx.reply(
+								`🎥 <a href="${offer.videoUrl}">Смотреть видео</a>`,
+								{
+									parse_mode: 'HTML',
+								},
+							)
+						} else {
+							await ctx.replyWithVideo(offer.videoUrl)
+							await ctx.telegram.deleteMessage(
+								ctx.chat.id,
+								videoLoadingMsg.message_id,
+							)
+						}
+					} catch (videoError) {
+						console.error('Ошибка при отправке видео:', videoError)
+						await ctx.telegram.editMessageText(
+							ctx.chat.id,
+							videoLoadingMsg.message_id,
+							undefined,
+							`🎥 <a href="${offer.videoUrl}">Смотреть видео</a>`,
+							{ parse_mode: 'HTML' },
+						)
+					}
+				}
+
+				// 2. Затем отправляем фотографии, если они есть
+				if (offer.images && offer.images.length > 0) {
+					if (offer.images.length === 1) {
+						// Если фотография одна, отправляем ее отдельно
+						await ctx.replyWithPhoto(offer.images[0].url)
+					} else if (offer.images.length > 1) {
+						// Если фотографий несколько, отправляем их как медиагруппу
+						const mediaGroup = offer.images.slice(0, 10).map(image => ({
+							type: 'photo',
+							media: image.url,
+						}))
+
+						// @ts-ignore - типы Telegraf не полностью поддерживают медиагруппы
+						await ctx.replyWithMediaGroup(mediaGroup)
+					}
+				}
+
+				// 3. Наконец, отправляем текст объявления с кнопками
+				// Используем оба варианта кнопки "Назад" для надежности
+				await ctx.reply(offerText, {
+					parse_mode: 'HTML',
+					reply_markup: {
+						inline_keyboard: [
+							[
+								{
+									text: '📞 Запросить контакты',
+									callback_data: `request_contacts_${offer.id}`,
+								},
+							],
+							[
+								{
+									text: '« Назад к списку',
+									callback_data: 'back_to_offers_list',
+								},
+							],
+							[
+								{
+									text: '« Меню',
+									callback_data: 'menu',
+								},
+							],
+						],
+					},
+				})
+			} catch (error) {
+				console.error('Ошибка при отправке объявления:', error)
+
+				// В случае ошибки, отправляем только текст
+				await ctx.reply(offerText, {
+					parse_mode: 'HTML',
+					reply_markup: {
+						inline_keyboard: [
+							[
+								{
+									text: '📞 Запросить контакты',
+									callback_data: `request_contacts_${offer.id}`,
+								},
+							],
+							[
+								{
+									text: '« Назад к списку',
+									callback_data: 'back_to_offers_list',
+								},
+							],
+							[
+								{
+									text: '« Меню',
+									callback_data: 'menu',
+								},
+							],
+						],
+					},
+				})
+
+				// Если есть видео, добавляем ссылку на него
+				if (offer.videoUrl && offer.videoUrl !== '-') {
+					await ctx.reply(`🎥 <a href="${offer.videoUrl}">Смотреть видео</a>`, {
+						parse_mode: 'HTML',
+					})
+				}
+			}
+		} catch (error) {
+			console.error('Ошибка при просмотре объявления:', error)
+			await ctx.reply('❌ Произошла ошибка при загрузке объявления')
 		}
+	}
 
-		// Отправляем все фотографии одним сообщением
-		if (offer.images && offer.images.length > 0) {
-			const mediaGroup: InputMediaPhoto[] = offer.images.map(
-				(image, index) => ({
-					type: 'photo',
-					media: image.url,
-					caption: index === 0 ? `🐮 <b>КРС</b>` : undefined,
-					parse_mode: index === 0 ? 'HTML' : undefined,
-				}),
-			)
+	// Вспомогательный метод для форматирования текста объявления
+	formatOfferText(offer) {
+		return `
+🐮 <b>${offer.title}</b>
 
-			await ctx.replyWithMediaGroup(mediaGroup)
-		}
-
-		const offerDetails = `
-🐮 <b>${this.getCattleTypeText(offer.cattleType)}</b>
-${offer.breed ? `🐄 Порода: ${offer.breed}\n` : ''}
-🎯 Назначение: ${this.getPurposeText(offer.purpose)}
+🐄 Тип КРС: ${this.getCattleTypeText(offer.cattleType)}
+🧬 Порода: ${offer.breed}
+🎯 Назначение: ${offer.purpose === 'BREEDING' ? 'Племенной' : 'Товарный'}
 🔢 Количество: ${offer.quantity} голов
 ⚖️ Вес: ${offer.weight} кг
 🌱 Возраст: ${offer.age} мес.
+
 💰 Цена: ${
 			offer.priceType === 'PER_HEAD'
-				? `${offer.pricePerHead.toLocaleString('ru-RU')} ₽/гол`
+				? `${offer.pricePerHead.toLocaleString('ru-RU')} ₽/голову`
 				: `${offer.pricePerKg.toLocaleString('ru-RU')} ₽/кг`
 		}
 ${offer.gktDiscount > 0 ? `🔻 Скидка на ЖКТ: ${offer.gktDiscount}%\n` : ''}
 📍 Регион: ${offer.region}
-${offer.videoUrl ? `🎥 <a href="${offer.videoUrl}">Смотреть видео</a>\n` : ''}
 📝 ${offer.description || 'Описание отсутствует'}`
-
-		await ctx.reply(offerDetails, {
-			parse_mode: 'HTML',
-			reply_markup: {
-				inline_keyboard: [
-					[
-						{
-							text: '📲 Запросить контакты',
-							callback_data: `request_contacts_${offer.id}`,
-						},
-					],
-					[{ text: '« Назад к списку', callback_data: 'browse_offers' }],
-					[{ text: '« Меню', callback_data: 'menu' }],
-				],
-			},
-		})
 	}
 
-	private getCattleTypeText(type: string): string {
+	// Вспомогательный метод для получения текстового представления типа КРС
+	getCattleTypeText(cattleType) {
 		const types = {
 			CALVES: 'Телята',
 			BULL_CALVES: 'Бычки',
@@ -877,7 +1054,7 @@ ${offer.videoUrl ? `🎥 <a href="${offer.videoUrl}">Смотреть видео
 			BULLS: 'Быки',
 			COWS: 'Коровы',
 		}
-		return types[type] || type
+		return types[cattleType] || cattleType
 	}
 
 	private getPurposeText(purpose: string): string {
@@ -944,26 +1121,23 @@ ${
 	}
 
 	async handlePhotosDone(ctx: Context) {
-		const userId = ctx.from.id
-		const state = this.offerStates.get(userId)
+		try {
+			await ctx.answerCbQuery()
+			const userId = ctx.from.id
+			const state = this.getOfferState(userId)
 
-		if (!state) {
-			await ctx.reply('❌ Начните создание объявления заново')
-			return
+			if (!state) {
+				await ctx.reply('❌ Начните создание объявления заново')
+				return
+			}
+
+			state.inputType = 'title'
+			this.updateOfferState(userId, state)
+			await ctx.reply('📝 Введите название объявления:')
+		} catch (error) {
+			console.error('Ошибка при завершении загрузки фото:', error)
+			await ctx.reply('❌ Произошла ошибка. Попробуйте еще раз.')
 		}
-
-		// Проверяем наличие фото или видео
-		if (state.photos.length === 0 && state.videos.length === 0) {
-			await ctx.reply('❌ Необходимо добавить хотя бы один медиафайл')
-			return
-		}
-
-		// Устанавливаем следующий шаг
-		state.inputType = 'title'
-		this.offerStates.set(userId, state)
-
-		// Запрашиваем название
-		await ctx.reply('📝 Введите название объявления:')
 	}
 
 	async startOfferCreation(ctx: Context) {
@@ -1057,5 +1231,103 @@ ${
 	// Добавляем публичный метод для обновления состояния
 	updateOfferState(userId: number, state: OfferState): void {
 		this.offerStates.set(userId, state)
+	}
+
+	// Обработка загрузки видео
+	async handleVideoUpload(ctx: Context) {
+		try {
+			const userId = ctx.from.id
+			const state = this.getOfferState(userId)
+
+			if (!state) {
+				await ctx.reply('❌ Начните создание объявления заново')
+				return
+			}
+
+			// Проверяем лимит файлов
+			const totalFiles =
+				(state.photos?.length || 0) + (state.videos?.length || 0)
+			if (totalFiles >= 5) {
+				await ctx.reply('❌ Достигнут лимит медиафайлов (максимум 5)')
+				return
+			}
+
+			// Получаем видео
+			const message = ctx.message
+			if (!('video' in message)) {
+				await ctx.reply('❌ Не удалось получить видео')
+				return
+			}
+
+			const video = message.video
+
+			// Проверяем размер видео
+			if (video.file_size > 50 * 1024 * 1024) {
+				await ctx.reply(
+					'❌ Размер видео превышает 50MB. Пожалуйста, отправьте файл меньшего размера.',
+				)
+				return
+			}
+
+			const fileId = video.file_id
+
+			// Получаем информацию о файле
+			const fileInfo = await ctx.telegram.getFile(fileId)
+			const fileUrl = `https://api.telegram.org/file/bot${this.configService.get('TELEGRAM_BOT_TOKEN')}/${fileInfo.file_path}`
+
+			// Загружаем файл в буфер
+			const response = await fetch(fileUrl)
+			const buffer = await response.buffer()
+
+			// Создаем объект файла для загрузки в S3
+			const file: UploadedFile = {
+				buffer,
+				originalname: `video_${Date.now()}.mp4`,
+				mimetype: 'video/mp4',
+				fieldname: 'video',
+				encoding: '7bit',
+				size: buffer.length,
+			}
+
+			// Загружаем файл в S3
+			const uploadedFile = await this.s3Service.uploadFile(file)
+
+			// Добавляем видео в состояние
+			if (!state.videos) {
+				state.videos = []
+			}
+			state.videos.push({
+				url: uploadedFile.url,
+			})
+
+			// Сохраняем URL видео для объявления
+			state.videoUrl = uploadedFile.url
+
+			this.updateOfferState(userId, state)
+
+			// Обновляем счетчик файлов
+			const newTotalFiles =
+				(state.photos?.length || 0) + (state.videos?.length || 0)
+			const remainingFiles = 5 - newTotalFiles
+
+			// Отправляем сообщение о загрузке видео
+			await ctx.reply(
+				`✅ Видео загружено (${newTotalFiles}/5)\n\n${
+					remainingFiles > 0
+						? `Вы можете загрузить еще ${remainingFiles} медиафайл(ов) или нажать кнопку "Готово" для продолжения.`
+						: 'Достигнут лимит медиафайлов. Нажмите "Готово" для продолжения.'
+				}`,
+				{
+					reply_markup: {
+						inline_keyboard: [
+							[{ text: '✅ Готово', callback_data: 'media_done' }],
+						],
+					},
+				},
+			)
+		} catch (error) {
+			console.error('Ошибка при загрузке видео:', error)
+			await ctx.reply('❌ Произошла ошибка при загрузке видео')
+		}
 	}
 }
