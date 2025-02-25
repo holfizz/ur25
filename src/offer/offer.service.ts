@@ -24,7 +24,27 @@ export class OfferService {
 		// Создаем объявление с фотографиями
 		const offer = await this.prisma.offer.create({
 			data: {
-				...dto,
+				title: dto.title,
+				description: dto.description,
+				price: dto.price,
+				quantity: dto.quantity,
+				breed: dto.breed,
+				age: dto.age,
+				weight: dto.weight,
+				location: dto.location,
+				cattleType: dto.cattleType,
+				purpose: dto.purpose,
+				priceType: dto.priceType,
+				pricePerKg: dto.pricePerKg || 0,
+				pricePerHead: dto.pricePerHead || 0,
+				gktDiscount: dto.gktDiscount || 0,
+				region: dto.region,
+				fullAddress: dto.fullAddress,
+				customsUnion: dto.customsUnion,
+				videoUrl: dto.videoUrl,
+				mercuryNumber: dto.mercuryNumber,
+				contactPerson: dto.contactPerson,
+				contactPhone: dto.contactPhone,
 				user: {
 					connect: {
 						id: userId,

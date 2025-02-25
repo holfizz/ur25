@@ -24,7 +24,7 @@ export class AuthService {
 		private userService: UserService,
 	) {}
 
-	async register(dto: AuthDto) {
+	async register(dto: AuthDto & { telegramId?: string }) {
 		const existUser = await this.prisma.user.findUnique({
 			where: { email: dto.email },
 		})
@@ -42,14 +42,13 @@ export class AuthService {
 				password: await bcrypt.hash(dto.password, 5),
 				role: dto.role || 'BUYER',
 				isVerified: false,
+				telegramId: dto.telegramId,
 			},
 		})
 
-		const tokens = await this.issueTokens(user.id)
-
 		return {
 			user: this.returnUserFields(user),
-			...tokens,
+			message: 'Регистрация успешна. Ожидайте подтверждения администратором.',
 		}
 	}
 
@@ -82,7 +81,13 @@ export class AuthService {
 		})
 
 		if (!user) {
-			throw new NotFoundException('User not found')
+			throw new NotFoundException('Пользователь не найден')
+		}
+
+		if (!user.isVerified) {
+			throw new ForbiddenException(
+				'Аккаунт ожидает подтверждения администратором',
+			)
 		}
 
 		const isPasswordValid = await bcrypt.compare(
@@ -90,10 +95,16 @@ export class AuthService {
 			user.password,
 		)
 		if (!isPasswordValid) {
-			throw new UnauthorizedException('Invalid password')
+			throw new UnauthorizedException('Неверный пароль')
 		}
 
-		return { success: true, user }
+		// Генерируем токены
+		const tokens = await this.issueTokens(user.id)
+
+		return {
+			user: this.returnUserFields(user),
+			...tokens, // Возвращаем accessToken и refreshToken
+		}
 	}
 
 	async getNewTokens(refreshToken: string) {
@@ -173,7 +184,7 @@ export class AuthService {
 					password: text,
 				})
 
-				if (result.success) {
+				if (result.accessToken) {
 					await ctx.reply('✅ Вход выполнен успешно!')
 					// Обновляем telegramId пользователя
 					await this.prisma.user.update({

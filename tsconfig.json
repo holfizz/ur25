@@ -1,5 +1,6 @@
 {
 	"compilerOptions": {
+		"jsx": "react",
 		"module": "CommonJS",
 		"declaration": true,
 		"removeComments": true,
@@ -19,6 +20,8 @@
 		"noFallthroughCasesInSwitch": false,
 		"paths": {
 			"@/*": ["src/*"]
-		}
+		},
+		"jsxFactory": "React.createElement",
+		"jsxFragmentFactory": "React.Fragment"
 	}
 }

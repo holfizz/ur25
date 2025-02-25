@@ -1,9 +1,9 @@
-import { OfferService } from '@/offer/offer.service'
 import { Injectable } from '@nestjs/common'
 import { Context, Markup, Telegraf } from 'telegraf'
 import { Message } from 'telegraf/typings/core/types/typegram'
 import { PrismaService } from '../prisma.service'
 import { TelegramAuthService } from './services/auth.service'
+import { TelegramOfferService } from './services/offer.service'
 
 @Injectable()
 export class TelegramService {
@@ -11,10 +11,15 @@ export class TelegramService {
 
 	constructor(
 		private readonly prisma: PrismaService,
-		private readonly offerService: OfferService,
+		private readonly offerService: TelegramOfferService,
 		private readonly authService: TelegramAuthService,
 	) {
 		this.bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN)
+
+		// Добавляем обработчик видео
+		this.bot.on('video', async ctx => {
+			await this.offerService.handleVideo(ctx)
+		})
 	}
 
 	public async handleStart(ctx: Context) {
@@ -23,18 +28,20 @@ export class TelegramService {
 			where: { telegramId: userId.toString() },
 		})
 
-		if (!user) {
-			await ctx.reply('Пожалуйста, выберите вашу роль для регистрации:', {
-				reply_markup: {
-					inline_keyboard: [
-						[
-							{ text: '👤 Покупатель', callback_data: 'role_buyer' },
-							{ text: '🛠️ Поставщик', callback_data: 'role_supplier' },
-							{ text: '🚚 Перевозчик', callback_data: 'role_carrier' },
+		if (!user || !user.isVerified) {
+			await ctx.reply(
+				'👋 Добро пожаловать на нашу площадку для торговли КРС (крупного рогатого скота)! Пожалуйста, выберите действие:',
+				{
+					reply_markup: {
+						inline_keyboard: [
+							[
+								{ text: '📝 Регистрация', callback_data: 'register' },
+								{ text: '🔑 Войти', callback_data: 'login' },
+							],
 						],
-					],
+					},
 				},
-			})
+			)
 			return
 		}
 

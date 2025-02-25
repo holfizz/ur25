@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common'
+import { Injectable, NotFoundException } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import { JwtService } from '@nestjs/jwt'
 import { Role } from '@prisma/client'
@@ -7,9 +7,25 @@ import { Context } from 'telegraf'
 import { PrismaService } from '../../prisma.service'
 import { TelegramClient } from '../telegram.client'
 
+interface RegistrationState {
+	role: string | null
+	userType: string | null
+	entityType: string | null
+	inputType: string | null
+	email: string | null
+	name: string | null
+	phone: string | null
+	address: string | null
+	inn: string | null
+	ogrn: string | null
+	mercuryNumber: string | null
+	password: string | null
+	buyerType: string | null
+}
+
 @Injectable()
 export class TelegramAuthService {
-	public registrationStates: Map<number, any> = new Map()
+	private registrationStates: Map<number, RegistrationState> = new Map()
 	private loginStates: Map<number, { email?: string; password?: string }> =
 		new Map()
 
@@ -29,54 +45,36 @@ export class TelegramAuthService {
 			return
 		}
 
-		// Проверка, выбрана ли роль
-		if (!state.role) {
-			await ctx.reply('❓ Выберите вашу роль для регистрации:', {
-				reply_markup: {
-					inline_keyboard: [
-						[
-							{ text: '👤 Покупатель', callback_data: 'role_buyer' },
-							{ text: '🛠️ Поставщик', callback_data: 'role_supplier' },
-							{ text: '🚚 Перевозчик', callback_data: 'role_carrier' },
-						],
-					],
-				},
-			})
-			return
-		}
-
 		// Обработка ввода ИНН
 		if (state.inputType === 'inn') {
-			const isValid = await this.checkInn(text)
-			if (!isValid) {
-				await ctx.reply('❌ ИНН не найден или не активен. Попробуйте еще раз:')
-				return
-			}
-			state.inn = text
-			state.inputType = 'email' // Переход к следующему шагу
-			console.log(`Пользователь ${userId} ввел ИНН: ${text}`)
-			await ctx.reply('✅ ИНН введен верно! Теперь введите ваш email:')
-			this.registrationStates.set(userId, state)
-			return
-		}
+			try {
+				const isValid = await this.checkInn(text)
+				if (!isValid) {
+					await ctx.reply(
+						'❌ ИНН не найден или не активен. Попробуйте еще раз:',
+					)
+					return
+				}
 
-		// Логика для обработки email
-		if (state.inputType === 'email') {
-			if (!(await this.validateEmail(text))) {
+				state.inn = text
+				state.inputType = 'email'
+				this.registrationStates.set(userId, state)
+				await ctx.reply('✅ ИНН введен верно! Теперь введите ваш email:')
+				return
+			} catch (error) {
+				console.error('Ошибка при проверке ИНН:', error)
 				await ctx.reply(
-					'❌ Неверный формат email\n\n📝 Пример: example@mail.com',
+					'❌ Произошла ошибка при проверке ИНН. Попробуйте еще раз:',
 				)
 				return
 			}
+		}
 
-			// Проверяем, существует ли пользователь с таким email
-			const existingUser = await this.prisma.user.findUnique({
-				where: { email: text },
-			})
-
-			if (existingUser) {
+		// Обработка ввода email
+		if (state.inputType === 'email') {
+			if (!this.validateEmail(text)) {
 				await ctx.reply(
-					'❌ Пользователь с такой почтой уже существует. Пожалуйста, введите другой email:',
+					'❌ Неверный формат email\n\n📝 Пример: example@mail.com',
 				)
 				return
 			}
@@ -88,12 +86,13 @@ export class TelegramAuthService {
 			return
 		}
 
-		// Логика для обработки пароля
+		// Обработка ввода пароля
 		if (state.inputType === 'password') {
 			if (text.length < 6) {
 				await ctx.reply('❌ Пароль должен содержать минимум 6 символов')
 				return
 			}
+
 			state.password = text
 			state.inputType = 'confirmPassword'
 			this.registrationStates.set(userId, state)
@@ -101,7 +100,7 @@ export class TelegramAuthService {
 			return
 		}
 
-		// Логика для обработки подтверждения пароля
+		// Обработка подтверждения пароля
 		if (state.inputType === 'confirmPassword') {
 			if (text !== state.password) {
 				await ctx.reply('❌ Пароли не совпадают. Введите пароль заново:')
@@ -116,28 +115,55 @@ export class TelegramAuthService {
 			return
 		}
 
-		// Логика для обработки ФИО
+		// Обработка ввода имени
 		if (state.inputType === 'name') {
-			await this.handleNameInput(ctx, text, state)
+			state.name = text
+			state.inputType = 'phone'
+			await ctx.reply(
+				'📱 Введите ваш номер телефона:\n\n📝 Пример: +79991234567',
+			)
 			this.registrationStates.set(userId, state)
 			return
 		}
 
+		// Обработка ввода телефона
 		if (state.inputType === 'phone') {
-			await this.handlePhoneInput(ctx, text, state)
+			if (!this.validatePhone(text)) {
+				await ctx.reply(
+					'❌ Неверный формат номера телефона\n\n📝 Пример: +79991234567',
+				)
+				return
+			}
+
+			state.phone = text
+			state.inputType = 'mercury'
+			await ctx.reply(
+				'📋 Введите ваш RU-номер в системе "Меркурий" или нажмите "Пропустить":',
+				{
+					reply_markup: {
+						inline_keyboard: [
+							[{ text: '⏭️ Пропустить', callback_data: 'skip_mercury' }],
+						],
+					},
+				},
+			)
 			this.registrationStates.set(userId, state)
 			return
 		}
 
+		// Обработка ввода номера Меркурий
 		if (state.inputType === 'mercury') {
-			await this.handleMercuryInput(ctx, text, state)
+			state.mercuryNumber = text
+			state.inputType = 'address'
+			await ctx.reply('📍 Введите ваш адрес:')
 			this.registrationStates.set(userId, state)
 			return
 		}
 
+		// Обработка ввода адреса
 		if (state.inputType === 'address') {
-			await this.handleAddressInput(ctx, text, state)
-			this.registrationStates.set(userId, state)
+			state.address = text
+			await this.completeRegistration(ctx, state)
 			return
 		}
 
@@ -223,44 +249,44 @@ export class TelegramAuthService {
 		const userId = ctx.from.id
 
 		try {
-			// Проверяем email еще раз перед созданием пользователя
-			const existingUser = await this.prisma.user.findUnique({
-				where: { email: state.email },
-			})
+			// Хешируем пароль
+			const hashedPassword = await bcrypt.hash(state.password, 5)
 
-			if (existingUser) {
-				await ctx.reply(
-					'❌ Пользователь с такой почтой уже существует. Пожалуйста, начните регистрацию заново.',
-				)
-				this.registrationStates.delete(userId)
-				return
-			}
-
+			// Создаем пользователя напрямую
 			const user = await this.prisma.user.create({
 				data: {
 					email: state.email,
-					password: state.password,
+					name: state.name,
 					phone: state.phone,
+					address: state.address,
+					password: hashedPassword,
+					role: state.role.toUpperCase(),
 					inn: state.inn,
 					ogrn: state.ogrn,
-					role: state.role.toUpperCase(),
-					name: state.name,
-					telegramId: userId.toString(),
 					mercuryNumber: state.mercuryNumber,
+					isVerified: false,
+					telegramId: userId.toString(),
 				},
 			})
 
 			await ctx.reply(
-				'✅ Регистрация успешна!\n\n⏳ Ваша заявка отправлена на проверку администратору.\n📧 Уведомление о результатах проверки придет на указанную почту.',
+				'✅ Регистрация успешно завершена!\n\n' +
+					'Ваша заявка отправлена на рассмотрение администратору.\n' +
+					'После подтверждения вы получите уведомление и сможете войти в систему.',
+				{
+					reply_markup: {
+						inline_keyboard: [
+							[{ text: '« На главную', callback_data: 'start' }],
+						],
+					},
+				},
 			)
 
 			// Очищаем состояние регистрации
 			this.registrationStates.delete(userId)
 		} catch (error) {
 			console.error('Ошибка при регистрации:', error)
-			await ctx.reply(
-				'❌ Произошла ошибка при регистрации. Пожалуйста, попробуйте еще раз.',
-			)
+			await ctx.reply('❌ Произошла ошибка при регистрации. Попробуйте позже.')
 		}
 	}
 
@@ -270,22 +296,33 @@ export class TelegramAuthService {
 	}
 
 	private async checkInn(inn: string): Promise<boolean> {
-		const apiKey = this.configService.get('DATANEWTON_API_KEY')
-		const url = `https://api.datanewton.ru/v1/counterparty?key=${apiKey}&inn=${inn}`
+		try {
+			// Проверяем формат ИНН
+			const innRegex = /^\d{10}$|^\d{12}$/
+			if (!innRegex.test(inn)) {
+				return false
+			}
 
-		const response = await fetch(url)
-		const data = await response.json()
+			const apiKey = this.configService.get('DATANEWTON_API_KEY')
+			const url = `https://api.datanewton.ru/v1/counterparty?key=${apiKey}&inn=${inn}`
 
-		if (data.code === 1) {
-			console.error('Контрагент не найден:', data.message)
-			return false
-		}
+			const response = await fetch(url)
+			const data = await response.json()
 
-		if (data && data.company && data.company.company_names) {
-			return data.company.status && data.company.status.active_status
-		} else {
-			console.error('Неизвестный ответ от API:', data)
-			return false
+			if (data.code === 1) {
+				console.error('Контрагент не найден:', data.message)
+				return false
+			}
+
+			if (data && data.company && data.company.company_names) {
+				return data.company.status && data.company.status.active_status
+			} else {
+				console.error('Неизвестный ответ от API:', data)
+				return false
+			}
+		} catch (error) {
+			console.error('Ошибка при проверке ИНН через API:', error)
+			throw error
 		}
 	}
 
@@ -325,7 +362,21 @@ export class TelegramAuthService {
 
 	async handleRegister(ctx: Context) {
 		const userId = ctx.from.id
-		this.registrationStates.set(userId, {})
+		this.registrationStates.set(userId, {
+			role: null,
+			userType: null,
+			entityType: null,
+			inputType: null,
+			email: null,
+			name: null,
+			phone: null,
+			address: null,
+			inn: null,
+			ogrn: null,
+			mercuryNumber: null,
+			password: null,
+			buyerType: null,
+		})
 		await ctx.reply('📧 Введите ваш email:\n\n📝 Пример: example@mail.com')
 	}
 
@@ -351,18 +402,19 @@ export class TelegramAuthService {
 
 	async startRegistration(userId: number) {
 		this.registrationStates.set(userId, {
-			inputType: null,
-			userType: null,
-			inn: null,
-			ogrn: null,
 			role: null,
+			userType: null,
 			entityType: null,
+			inputType: null,
 			email: null,
-			password: null,
 			name: null,
 			phone: null,
-			mercuryNumber: null,
 			address: null,
+			inn: null,
+			ogrn: null,
+			mercuryNumber: null,
+			password: null,
+			buyerType: null,
 		})
 	}
 
@@ -438,27 +490,86 @@ export class TelegramAuthService {
 
 	async handleRoleSelection(ctx: Context, role: string) {
 		const userId = ctx.from.id
-		const state = this.getRegistrationState(userId)
+		let state = this.registrationStates.get(userId)
+
+		if (!state) {
+			await this.startRegistration(userId)
+			state = this.registrationStates.get(userId)
+		}
+
 		state.role = role.toUpperCase()
 
-		await ctx.reply('✅ Роль выбрана! Теперь выберите тип регистрации:', {
-			reply_markup: {
-				inline_keyboard: [
-					[
-						{ text: '🏢 Организация', callback_data: 'type_organization' },
-						{ text: '👤 Физическое лицо', callback_data: 'type_individual' },
+		if (role === 'BUYER') {
+			await ctx.reply('Выберите тип покупателя:', {
+				reply_markup: {
+					inline_keyboard: [
+						[
+							{
+								text: '👤 Частное лицо',
+								callback_data: 'user_type_individual',
+							},
+							{ text: '🏠 КФХ', callback_data: 'user_type_farm' },
+						],
+						[
+							{
+								text: '🏭 С/х предприятие',
+								callback_data: 'user_type_agricultural',
+							},
+							{
+								text: '🏢 Мясокомбинат',
+								callback_data: 'user_type_meat_factory',
+							},
+						],
+						[
+							{
+								text: '🚜 Откормочная площадка',
+								callback_data: 'user_type_feedlot',
+							},
+							{
+								text: '📋 Участник гранта',
+								callback_data: 'user_type_grant_member',
+							},
+						],
 					],
-				],
-			},
-		})
+				},
+			})
+		} else if (role === 'SUPPLIER') {
+			await ctx.reply('Выберите тип поставщика:', {
+				reply_markup: {
+					inline_keyboard: [
+						[
+							{
+								text: '👤 Частное лицо',
+								callback_data: 'user_type_individual',
+							},
+							{ text: '🏠 КФХ', callback_data: 'user_type_farm' },
+						],
+						[
+							{
+								text: '🏭 С/х предприятие',
+								callback_data: 'user_type_agricultural',
+							},
+						],
+					],
+				},
+			})
+		}
 
 		this.registrationStates.set(userId, state)
 	}
 
 	async handleUserTypeSelection(ctx: Context, userType: string) {
 		const userId = ctx.from.id
-		const state = this.getRegistrationState(userId)
+		let state = this.registrationStates.get(userId)
+
+		if (!state) {
+			await this.startRegistration(userId)
+			state = this.registrationStates.get(userId)
+		}
+
+		state.userType = userType
 		state.entityType = userType
+		this.registrationStates.set(userId, state)
 
 		if (userType === 'individual') {
 			// Для физических лиц сразу переходим к вводу email
@@ -506,65 +617,9 @@ export class TelegramAuthService {
 		}
 	}
 
-	async handleStart(ctx: Context) {
-		await ctx.reply(' Пожалуйста, выберите вашу роль для регистрации:', {
-			reply_markup: {
-				inline_keyboard: [
-					[
-						{ text: '👤 Покупатель', callback_data: 'role_buyer' },
-						{ text: '🛠️ Поставщик', callback_data: 'role_supplier' },
-					],
-					[{ text: '🚚 Перевозчик', callback_data: 'role_carrier' }],
-				],
-			},
-		})
-	}
-
-	async handleRegisterCommand(ctx: Context) {
-		const userId = ctx.from.id
-		await this.startRegistration(userId)
-		await this.handleStart(ctx)
-	}
-
-	async setInputType(ctx: Context, inputType: string) {
-		const userId = ctx.from.id
-		const state = this.getRegistrationState(userId)
-
-		if (!state) return
-
-		state.inputType = inputType
-		this.registrationStates.set(userId, state)
-
-		if (inputType === 'inn') {
-			await ctx.reply('📝 Введите ваш ИНН:')
-		} else if (inputType === 'ogrn') {
-			await ctx.reply('📋 Введите ваш ОГРН:')
-		}
-	}
-
-	async handleSkipMercury(ctx: Context) {
-		const userId = ctx.from.id
-		const state = this.getRegistrationState(userId)
-
-		if (!state) {
-			await ctx.reply(
-				'❌ Состояние регистрации не найдено. Пожалуйста, начните регистрацию заново.',
-			)
-			return
-		}
-
-		// Устанавливаем состояние, что номер в системе "Меркурий" пропущен
-		state.mercuryNumber = null // Или любое другое значение, которое вы хотите установить
-		state.inputType = 'address' // Переход к следующему шагу
-		this.registrationStates.set(userId, state)
-
-		await ctx.reply('📍 Введите адрес:')
-	}
-
 	async handleLoginInput(ctx: Context, text: string) {
 		const userId = ctx.from.id
 		const loginState = this.loginStates.get(userId)
-		console.log('Обработка входа:', { userId, text, loginState })
 
 		if (!loginState) {
 			await ctx.reply('❌ Сессия входа истекла. Пожалуйста, начните заново.')
@@ -572,19 +627,29 @@ export class TelegramAuthService {
 		}
 
 		if (!loginState.email) {
-			// Проверка формата email
 			if (!this.validateEmail(text)) {
 				await ctx.reply('❌ Неверный формат email. Попробуйте еще раз.')
 				return
 			}
 
-			// Проверка существования пользователя
 			const user = await this.prisma.user.findUnique({
 				where: { email: text },
 			})
 
 			if (!user) {
 				await ctx.reply('❌ Пользователь не найден. Проверьте email.')
+				return
+			}
+
+			if (!user.isVerified) {
+				// Очищаем состояние входа
+				this.loginStates.delete(userId)
+
+				await ctx.reply(
+					'⏳ Ваш аккаунт еще не подтвержден администратором.\n\n' +
+						'Пожалуйста, дождитесь подтверждения. Вы получите уведомление, когда ваш аккаунт будет активирован.\n\n' +
+						'Используйте команду /start чтобы вернуться в главное меню.',
+				)
 				return
 			}
 
@@ -616,8 +681,6 @@ export class TelegramAuthService {
 				})
 
 				await ctx.reply('✅ Вход выполнен успешно!')
-
-				// Добавляем вызов меню после успешного входа
 				await ctx.reply('Выберите нужное действие:', {
 					reply_markup: {
 						inline_keyboard: [
@@ -644,5 +707,78 @@ export class TelegramAuthService {
 	async initLoginState(userId: number) {
 		console.log('Инициализация состояния входа для пользователя:', userId)
 		this.loginStates.set(userId, {})
+	}
+
+	async notifyAdminsAboutRegistration(registrationRequest: any) {
+		// Реализация метода для уведомления администраторов о новой заявке
+	}
+
+	async approveRegistration(registrationId: string) {
+		const registration = await this.prisma.registrationRequest.findUnique({
+			where: { id: registrationId },
+		})
+
+		if (!registration) {
+			throw new NotFoundException('Заявка на регистрацию не найдена')
+		}
+
+		// Создаем пользователя с хешированным паролем из заявки
+		const user = await this.prisma.user.create({
+			data: {
+				email: registration.email,
+				name: registration.name,
+				phone: registration.phone,
+				address: registration.address,
+				password: registration.password, // Пароль уже хешированный
+				role: registration.role,
+				isVerified: true,
+				inn: registration.inn,
+				ogrn: registration.ogrn,
+				mercuryNumber: registration.mercuryNumber,
+			},
+		})
+
+		// Помечаем заявку как обработанную
+		await this.prisma.registrationRequest.update({
+			where: { id: registrationId },
+			data: { isProcessed: true },
+		})
+
+		return user
+	}
+
+	async setInputType(ctx: Context, inputType: string) {
+		const userId = ctx.from.id
+		const state = this.getRegistrationState(userId)
+
+		if (!state) return
+
+		state.inputType = inputType
+		this.registrationStates.set(userId, state)
+
+		if (inputType === 'inn') {
+			await ctx.reply('📝 Введите ваш ИНН:')
+		} else if (inputType === 'ogrn') {
+			await ctx.reply('📋 Введите ваш ОГРН:')
+		}
+	}
+
+	async handleSkipMercury(ctx: Context) {
+		const userId = ctx.from.id
+		const state = this.getRegistrationState(userId)
+
+		if (!state) {
+			await ctx.reply(
+				'❌ Состояние регистрации не найдено. Пожалуйста, начните регистрацию заново.',
+			)
+			return
+		}
+
+		// Устанавливаем состояние, что номер в системе "Меркурий" пропущен
+		state.mercuryNumber = null
+		state.inputType = 'address' // Переход к следующему шагу
+		this.registrationStates.set(userId, state)
+
+		await ctx.reply('📍 Введите адрес:')
 	}
 }

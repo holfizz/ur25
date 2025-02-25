@@ -1,3 +1,4 @@
+import { CattlePurpose, CattleType, PriceType } from '@prisma/client'
 import { IsNumber, IsString, Min } from 'class-validator'
 
 export class CreateOfferDto {
@@ -28,4 +29,18 @@ export class CreateOfferDto {
 
 	@IsString()
 	location: string
+
+	cattleType: CattleType
+	purpose: CattlePurpose
+	priceType: PriceType
+	pricePerKg?: number
+	pricePerHead?: number
+	gktDiscount?: number
+	region: string
+	fullAddress: string
+	customsUnion: boolean
+	videoUrl?: string
+	mercuryNumber?: string
+	contactPerson?: string
+	contactPhone?: string
 }

@@ -37,6 +37,25 @@ enum AgeGroup {
   HEIFER // Нетели
 }
 
+enum CattleType {
+  CALVES // Телята
+  BULL_CALVES // Бычки
+  HEIFERS // Телки
+  BREEDING_HEIFERS // Нетели
+  BULLS // Быки
+  COWS // Коровы
+}
+
+enum CattlePurpose {
+  COMMERCIAL
+  BREEDING
+}
+
+enum PriceType {
+  PER_HEAD // За голову
+  PER_KG // За кг
+}
+
 model User {
   id        String   @id @default(uuid())
   createdAt DateTime @default(now()) @map("created_at")
@@ -118,6 +137,21 @@ model Offer {
   contactPerson String?
   contactPhone  String?
 
+  // Удаляем дублирующиеся поля цены
+  priceType    PriceType // За голову/за кг
+  pricePerKg   Float? // Цена за кг
+  pricePerHead Float? // Цена за голову
+  gktDiscount  Float? // Скидка на ЖКТ в процентах
+
+  cattleType   CattleType
+  purpose      CattlePurpose
+  region       String // Регион (публичный)
+  fullAddress  String // Полный адрес (только для админа)
+  customsUnion Boolean // Состоит в Реестре ТС
+  videoUrl     String? // Ссылка на видео
+
+  lastActualityCheck DateTime @default(now())
+
   @@map("offers")
 }
 
@@ -173,9 +207,10 @@ model RegistrationRequest {
   phone         String
   address       String
   inn           String
-  ogrn          String? // Делаем опциональным
-  mercuryNumber String? // Делаем опциональным
+  ogrn          String? // Опционально
+  mercuryNumber String? // Опционально
   role          Role
   userType      String
   isProcessed   Boolean  @default(false)
+  password      String // Добавляем поле для хранения хешированного пароля
 }

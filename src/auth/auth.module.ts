@@ -1,6 +1,7 @@
 import { S3Service } from '@/common/services/s3.service'
 import { OfferService } from '@/offer/offer.service'
 import { TelegramAuthService } from '@/telegram/services/auth.service'
+import { TelegramOfferService } from '@/telegram/services/offer.service'
 import { TelegramClient } from '@/telegram/telegram.client'
 import { TelegramService } from '@/telegram/telegram.service'
 import { MailerModule } from '@nestjs-modules/mailer'
@@ -65,6 +66,7 @@ import { MailService } from './mail.service'
 		S3Service,
 		TelegramClient,
 		TelegramAuthService,
+		TelegramOfferService,
 	],
 })
 export class AuthModule {}

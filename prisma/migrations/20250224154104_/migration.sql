@@ -10,6 +10,15 @@ CREATE TYPE "Purpose" AS ENUM ('MEAT', 'BREEDING', 'DAIRY', 'FATTENING');
 -- CreateEnum
 CREATE TYPE "AgeGroup" AS ENUM ('CALF', 'YOUNG', 'ADULT', 'HEIFER');
 
+-- CreateEnum
+CREATE TYPE "CattleType" AS ENUM ('CALF', 'BULL_CALF', 'HEIFER', 'HEIFER_BRED', 'BULL', 'COW');
+
+-- CreateEnum
+CREATE TYPE "CattlePurpose" AS ENUM ('COMMERCIAL', 'BREEDING');
+
+-- CreateEnum
+CREATE TYPE "PriceType" AS ENUM ('PER_HEAD', 'PER_KG');
+
 -- CreateTable
 CREATE TABLE "users" (
     "id" TEXT NOT NULL,
@@ -19,31 +28,34 @@ CREATE TABLE "users" (
     "password" TEXT NOT NULL,
     "name" TEXT NOT NULL,
     "phone" TEXT,
-    "telegram_id" TEXT,
+    "telegramId" TEXT,
     "address" TEXT,
     "buyerType" "BuyerType",
-    "role" "Role" NOT NULL DEFAULT 'BUYER',
+    "role" "Role" NOT NULL,
     "is_admin" BOOLEAN NOT NULL DEFAULT false,
     "notifications_enabled" BOOLEAN NOT NULL DEFAULT false,
     "isVerified" BOOLEAN NOT NULL DEFAULT false,
+    "inn" TEXT,
+    "ogrn" TEXT,
+    "mercuryNumber" TEXT,
 
     CONSTRAINT "users_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
 CREATE TABLE "requests" (
-    "id" TEXT NOT NULL,
-    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "updatedAt" TIMESTAMP(3) NOT NULL,
-    "location" TEXT NOT NULL,
+    "id" SERIAL NOT NULL,
     "breed" TEXT NOT NULL,
     "quantity" INTEGER NOT NULL,
-    "weight" INTEGER NOT NULL,
+    "weight" DOUBLE PRECISION NOT NULL,
     "age" INTEGER NOT NULL,
     "deadline" TIMESTAMP(3) NOT NULL,
     "purpose" "Purpose" NOT NULL,
-    "maxPrice" DOUBLE PRECISION NOT NULL,
-    "status" TEXT NOT NULL DEFAULT 'PENDING',
+    "maxPrice" DOUBLE PRECISION,
+    "status" TEXT NOT NULL DEFAULT 'ACTIVE',
+    "location" TEXT NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
     "userId" TEXT NOT NULL,
 
     CONSTRAINT "requests_pkey" PRIMARY KEY ("id")
@@ -62,8 +74,21 @@ CREATE TABLE "offers" (
     "age" INTEGER NOT NULL,
     "weight" DOUBLE PRECISION NOT NULL,
     "location" TEXT NOT NULL,
-    "status" TEXT NOT NULL DEFAULT 'ACTIVE',
+    "status" TEXT NOT NULL DEFAULT 'PENDING',
     "userId" TEXT NOT NULL,
+    "mercuryNumber" TEXT,
+    "contactPerson" TEXT,
+    "contactPhone" TEXT,
+    "cattleType" "CattleType" NOT NULL,
+    "purpose" "CattlePurpose" NOT NULL,
+    "priceType" "PriceType" NOT NULL,
+    "pricePerKg" DOUBLE PRECISION,
+    "pricePerHead" DOUBLE PRECISION,
+    "gutDiscount" DOUBLE PRECISION,
+    "region" TEXT NOT NULL,
+    "fullAddress" TEXT NOT NULL,
+    "customsUnion" BOOLEAN NOT NULL,
+    "videoUrl" TEXT,
 
     CONSTRAINT "offers_pkey" PRIMARY KEY ("id")
 );
@@ -82,8 +107,8 @@ CREATE TABLE "images" (
 
 -- CreateTable
 CREATE TABLE "matches" (
-    "id" TEXT NOT NULL,
-    "requestId" TEXT NOT NULL,
+    "id" SERIAL NOT NULL,
+    "requestId" INTEGER NOT NULL,
     "offerId" TEXT NOT NULL,
     "status" TEXT NOT NULL DEFAULT 'PENDING',
 
@@ -92,25 +117,41 @@ CREATE TABLE "matches" (
 
 -- CreateTable
 CREATE TABLE "messages" (
-    "id" TEXT NOT NULL,
+    "id" SERIAL NOT NULL,
     "content" TEXT NOT NULL,
     "fromId" TEXT NOT NULL,
     "toId" TEXT NOT NULL,
-    "requestId" TEXT,
-    "matchId" TEXT,
+    "requestId" INTEGER,
+    "matchId" INTEGER,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT "messages_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "RegistrationRequest" (
+    "id" TEXT NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+    "email" TEXT NOT NULL,
+    "name" TEXT NOT NULL,
+    "phone" TEXT NOT NULL,
+    "address" TEXT NOT NULL,
+    "inn" TEXT NOT NULL,
+    "ogrn" TEXT,
+    "mercuryNumber" TEXT,
+    "role" "Role" NOT NULL,
+    "userType" TEXT NOT NULL,
+    "isProcessed" BOOLEAN NOT NULL DEFAULT false,
+
+    CONSTRAINT "RegistrationRequest_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateIndex
 CREATE UNIQUE INDEX "users_email_key" ON "users"("email");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "users_name_key" ON "users"("name");
-
--- CreateIndex
-CREATE UNIQUE INDEX "users_telegram_id_key" ON "users"("telegram_id");
+CREATE UNIQUE INDEX "users_telegramId_key" ON "users"("telegramId");
 
 -- AddForeignKey
 ALTER TABLE "requests" ADD CONSTRAINT "requests_userId_fkey" FOREIGN KEY ("userId") REFERENCES "users"("id") ON DELETE RESTRICT ON UPDATE CASCADE;

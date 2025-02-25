@@ -1,6 +1,7 @@
 import { Action, Ctx, On, Start, Update } from 'nestjs-telegraf'
 import { Context } from 'telegraf'
 import { CallbackQuery, Message } from 'telegraf/typings/core/types/typegram'
+import { PrismaService } from '../prisma.service'
 import { TelegramAuthService } from './services/auth.service'
 import { TelegramMessageService } from './services/message.service'
 import { TelegramOfferService } from './services/offer.service'
@@ -17,6 +18,7 @@ export class TelegramUpdate {
 		private readonly requestService: TelegramRequestService,
 		private readonly messageService: TelegramMessageService,
 		private readonly profileService: TelegramProfileService,
+		private readonly prisma: PrismaService,
 	) {}
 
 	@Start()
@@ -55,8 +57,17 @@ export class TelegramUpdate {
 	}
 	@Action('skip_mercury')
 	async handleSkipMercury(@Ctx() ctx: Context) {
-		console.log('skip_mercury')
-		await this.authService.handleSkipMercury(ctx)
+		await ctx.answerCbQuery()
+		const userId = ctx.from.id
+		const state = this.offerService.getOfferState(userId)
+
+		if (!state) {
+			await ctx.reply('❌ Начните создание объявления заново')
+			return
+		}
+
+		// Пропускаем ввод номера Меркурий и переходим к загрузке фото
+		await this.offerService.handleCreateOffer(ctx)
 	}
 	@Action(/role_.*/)
 	async handleRoleSelection(@Ctx() ctx: Context) {
@@ -66,11 +77,11 @@ export class TelegramUpdate {
 		await this.authService.handleRoleSelection(ctx, role)
 	}
 
-	@Action(/type_.*/)
+	@Action(/user_type_.*/)
 	async handleUserTypeSelection(@Ctx() ctx: Context) {
 		const callbackQuery = ctx.callbackQuery
 		//@ts-ignore
-		const userType = callbackQuery.data.split('_')[1]
+		const userType = callbackQuery.data.split('_')[2]
 		await this.authService.handleUserTypeSelection(ctx, userType)
 	}
 
@@ -84,11 +95,29 @@ export class TelegramUpdate {
 
 	@Action('create_ad')
 	async handleCreateOffer(@Ctx() ctx: Context) {
+		const userId = ctx.from.id
+		const user = await this.prisma.user.findUnique({
+			where: { telegramId: userId.toString() },
+		})
+
+		if (!user) {
+			await ctx.reply('❌ Пожалуйста, сначала авторизуйтесь.')
+			return
+		}
+
+		if (user.role !== 'SUPPLIER') {
+			await ctx.reply(
+				'❌ Создавать объявления могут только поставщики.\n\n' +
+					'Если вы хотите стать поставщиком, пожалуйста, создайте новый аккаунт с соответствующей ролью.',
+			)
+			return
+		}
+
 		await this.offerService.startOfferCreation(ctx)
 	}
 
-	@Action('photos_done')
-	async handlePhotosDone(@Ctx() ctx: Context) {
+	@Action('media_done')
+	async handleMediaDone(@Ctx() ctx: Context) {
 		await this.offerService.handlePhotosDone(ctx)
 	}
 
@@ -213,6 +242,26 @@ export class TelegramUpdate {
 		}
 	}
 
+	@On('video')
+	async onVideo(@Ctx() ctx: Context) {
+		try {
+			const userId = ctx.from.id
+			const offerState = await this.offerService.getOfferState(userId)
+
+			if (!offerState) {
+				await ctx.reply('❌ Сначала начните создание объявления')
+				return
+			}
+
+			await this.offerService.handleVideo(ctx)
+		} catch (error) {
+			console.error('Ошибка при обработке видео:', error)
+			await ctx.reply(
+				'❌ Произошла ошибка при загрузке видео. Попробуйте еще раз.',
+			)
+		}
+	}
+
 	@Action('login')
 	async handleLogin(@Ctx() ctx: Context) {
 		await this.telegramService.handleLogin(ctx)
@@ -241,5 +290,187 @@ export class TelegramUpdate {
 	@Action(/view_offer_.*/)
 	async handleViewOffer(@Ctx() ctx: Context) {
 		await this.offerService.handleViewOffer(ctx)
+	}
+
+	@Action('start')
+	async handleStartButton(@Ctx() ctx: Context) {
+		// Сначала отвечаем на callback query
+		await ctx.answerCbQuery()
+
+		await ctx.reply(
+			'👋 Добро пожаловать на нашу площадку для торговли КРС (крупного рогатого скота)! Пожалуйста, выберите действие:',
+			{
+				reply_markup: {
+					inline_keyboard: [
+						[
+							{ text: '📝 Регистрация', callback_data: 'register' },
+							{ text: '🔑 Войти', callback_data: 'login' },
+						],
+					],
+				},
+			},
+		)
+	}
+
+	@Action(/actual_yes_.*/)
+	async handleActualityYes(@Ctx() ctx: Context) {
+		await ctx.answerCbQuery()
+		//@ts-ignore
+		const offerId = ctx.callbackQuery.data.replace('actual_yes_', '')
+
+		await this.prisma.offer.update({
+			where: { id: offerId },
+			data: { lastActualityCheck: new Date() },
+		})
+
+		await ctx.reply('✅ Спасибо! Объявление остается активным.')
+	}
+
+	@Action(/actual_no_.*/)
+	async handleActualityNo(@Ctx() ctx: Context) {
+		await ctx.answerCbQuery()
+		//@ts-ignore
+
+		const offerId = ctx.callbackQuery.data.replace('actual_no_', '')
+
+		await this.prisma.offer.update({
+			where: { id: offerId },
+			data: {
+				status: 'PAUSED',
+				lastActualityCheck: new Date(),
+			},
+		})
+
+		await ctx.reply(
+			'⏸ Объявление приостановлено.\n\n' +
+				'Вы можете возобновить его в любой момент в разделе "Мои объявления".',
+		)
+	}
+
+	@Action(/cattle_type_.*/)
+	async handleCattleTypeSelect(@Ctx() ctx: Context) {
+		try {
+			await ctx.answerCbQuery()
+
+			const userId = ctx.from.id
+			const state = this.offerService.getOfferState(userId)
+			//@ts-ignore
+			const type = ctx.callbackQuery.data.split('_')[2] as CattleType
+
+			if (!state) {
+				await ctx.reply('❌ Начните создание объявления заново')
+				return
+			}
+
+			state.cattleType = type
+			state.inputType = 'breed'
+			this.offerService.updateOfferState(userId, state)
+
+			// Запрашиваем породу
+			await ctx.reply('🐮 Введите породу КРС:')
+		} catch (error) {
+			console.error('Ошибка при выборе типа КРС:', error)
+			await ctx.reply('❌ Произошла ошибка. Попробуйте еще раз.')
+		}
+	}
+
+	@Action(/purpose_.*/)
+	async handlePurpose(@Ctx() ctx: Context) {
+		try {
+			await ctx.answerCbQuery()
+
+			const userId = ctx.from.id
+			const state = this.offerService.getOfferState(userId)
+			//@ts-ignore
+			const purpose = ctx.callbackQuery.data.split('_')[1] as CattlePurpose
+
+			if (!state) {
+				await ctx.reply('❌ Начните создание объявления заново')
+				return
+			}
+
+			state.purpose = purpose
+			state.inputType = 'price_type'
+			this.offerService.updateOfferState(userId, state)
+
+			// Запрашиваем формат цены
+			await ctx.reply('💰 Выберите формат цены:', {
+				reply_markup: {
+					inline_keyboard: [
+						[
+							{ text: '🐮 За голову', callback_data: 'price_PER_HEAD' },
+							{ text: '⚖️ За кг', callback_data: 'price_PER_KG' },
+						],
+					],
+				},
+			})
+		} catch (error) {
+			console.error('Ошибка при выборе назначения:', error)
+			await ctx.reply('❌ Произошла ошибка. Попробуйте еще раз.')
+		}
+	}
+
+	@Action(/price_.*/)
+	async handlePriceType(@Ctx() ctx: Context) {
+		try {
+			await ctx.answerCbQuery()
+
+			const userId = ctx.from.id
+			const state = this.offerService.getOfferState(userId)
+			//@ts-ignore
+			const priceType = ctx.callbackQuery.data.split('_')[1] as PriceType
+
+			if (!state) {
+				await ctx.reply('❌ Начните создание объявления заново')
+				return
+			}
+
+			state.priceType = priceType
+			state.inputType =
+				priceType === 'PER_HEAD' ? 'price_per_head' : 'price_per_kg'
+			this.offerService.updateOfferState(userId, state)
+
+			if (priceType === 'PER_HEAD') {
+				await ctx.reply('💰 Введите цену за голову (₽):')
+			} else {
+				await ctx.reply('⚖️ Введите цену за кг (₽):')
+			}
+		} catch (error) {
+			console.error('Ошибка при выборе типа цены:', error)
+			await ctx.reply('❌ Произошла ошибка. Попробуйте еще раз.')
+		}
+	}
+
+	@Action('gkt_yes')
+	async handleGktYes(@Ctx() ctx: Context) {
+		await ctx.answerCbQuery()
+		const userId = ctx.from.id
+		const state = this.offerService.getOfferState(userId)
+
+		if (!state) {
+			await ctx.reply('❌ Начните создание объявления заново')
+			return
+		}
+
+		state.inputType = 'gkt_discount'
+		this.offerService.updateOfferState(userId, state)
+		await ctx.reply('Введите процент скидки на ЖКТ (число от 0 до 100):')
+	}
+
+	@Action('gkt_no')
+	async handleGktNo(@Ctx() ctx: Context) {
+		await ctx.answerCbQuery()
+		const userId = ctx.from.id
+		const state = this.offerService.getOfferState(userId)
+
+		if (!state) {
+			await ctx.reply('❌ Начните создание объявления заново')
+			return
+		}
+
+		state.gktDiscount = 0
+		state.inputType = 'region'
+		this.offerService.updateOfferState(userId, state)
+		await ctx.reply('📍 Введите регион:')
 	}
 }

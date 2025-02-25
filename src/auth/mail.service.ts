@@ -6,6 +6,18 @@ import { VerificationTemplate } from './templates/verification.template'
 export class MailService {
 	constructor(private readonly mailerService: MailerService) {}
 
+	async sendMail(options: { to: string; subject: string; html: string }) {
+		try {
+			await this.mailerService.sendMail({
+				from: `"UR25" <${process.env.SMTP_USER}>`,
+				...options,
+			})
+		} catch (error) {
+			console.error('Error sending email:', error)
+			throw error
+		}
+	}
+
 	async sendVerificationEmail(to: string) {
 		try {
 			await this.mailerService.sendMail({

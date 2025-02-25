@@ -1,6 +1,7 @@
 // Сервис для работы с объявлениями
 import { Injectable } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
+import { CattlePurpose, CattleType, PriceType } from '@prisma/client'
 import fetch from 'node-fetch'
 import { Context, Markup } from 'telegraf'
 import {
@@ -24,6 +25,7 @@ interface UploadedFile {
 
 interface OfferState {
 	photos: Array<{ url: string; key: string }>
+	videos: Array<{ url: string }>
 	inputType?: string
 	title?: string
 	quantity?: number
@@ -36,6 +38,17 @@ interface OfferState {
 	contactPerson?: string
 	contactPhone?: string
 	breed?: string
+	cattleType?: CattleType
+	purpose?: CattlePurpose
+	priceType?: PriceType
+	pricePerKg?: number
+	pricePerHead?: number
+	gktDiscount?: number
+	region?: string
+	fullAddress?: string
+	customsUnion?: boolean
+	videoUrl?: string
+	addingGktDiscount?: boolean
 }
 
 @Injectable()
@@ -59,30 +72,42 @@ export class TelegramOfferService {
 
 		if (!user?.mercuryNumber) {
 			// Если номера нет, запрашиваем его
-			this.offerStates.set(userId, { photos: [], inputType: 'mercury_number' })
+			this.offerStates.set(userId, {
+				photos: [],
+				videos: [],
+				inputType: 'mercury_number',
+			})
 			await ctx.reply(
 				'🔢 Для создания объявления необходимо указать номер в системе "Меркурий".\n\nПожалуйста, введите ваш номер:',
 				{
 					reply_markup: {
-						inline_keyboard: [[Markup.button.callback('« Отмена', 'menu')]],
+						inline_keyboard: [
+							[{ text: '⏩ Пропустить', callback_data: 'skip_mercury' }],
+							[{ text: '« Отмена', callback_data: 'menu' }],
+						],
 					},
 				},
 			)
 			return
 		}
 
-		// Если номер есть, начинаем создание объявления
-		this.offerStates.set(userId, { photos: [] })
+		// Если номер есть или пользователь пропустил, начинаем создание объявления
+		this.offerStates.set(userId, {
+			photos: [],
+			videos: [],
+		})
 		await ctx.reply(
-			'📸 Отправьте фотографии КРС (до 5 фото)\n\n' +
+			'📸 Отправьте фотографии или видео КРС (до 5 файлов)\n\n' +
 				'✅ Рекомендуется:\n' +
-				'• Фото животных в полный рост\n' +
-				'• При хорошем освещении\n' +
-				'• С разных ракурсов',
+				'• Фотографии животных в полный рост\n' +
+				'• Съемка при хорошем освещении\n' +
+				'• Фото с разных ракурсов\n' +
+				'• Видео с обходом животных\n\n' +
+				'⚠️ Поддерживаются фото и видео до 50MB',
 			{
 				reply_markup: {
 					inline_keyboard: [
-						[{ text: '➡️ Продолжить', callback_data: 'photos_done' }],
+						[{ text: '➡️ Продолжить', callback_data: 'media_done' }],
 						[{ text: '« Отмена', callback_data: 'menu' }],
 					],
 				},
@@ -91,14 +116,24 @@ export class TelegramOfferService {
 	}
 
 	async handlePhotoUpload(ctx: Context, fileUrl: string, userId: number) {
+		const user = await this.prisma.user.findUnique({
+			where: { telegramId: userId.toString() },
+		})
+
+		if (!user || user.role !== 'SUPPLIER') {
+			await ctx.reply('❌ У вас нет прав для создания объявлений.')
+			return
+		}
+
 		const state = this.offerStates.get(userId)
 		if (!state) {
 			await ctx.reply('❌ Начните создание объявления заново')
 			return
 		}
 
-		if (state.photos.length >= 5) {
-			await ctx.reply('❌ Достигнут лимит фотографий (максимум 5)')
+		const totalFiles = state.photos.length + state.videos.length
+		if (totalFiles >= 5) {
+			await ctx.reply('❌ Достигнут лимит медиафайлов (максимум 5)')
 			return
 		}
 
@@ -121,11 +156,11 @@ export class TelegramOfferService {
 			this.offerStates.set(userId, state)
 
 			await ctx.reply(
-				`✅ Фото ${state.photos.length}/5 добавлено\n\nДобавьте еще фото или нажмите "Продолжить"`,
+				`✅ Фото ${totalFiles + 1}/5 загружено\n\nДобавьте еще медиафайлы или нажмите "Продолжить"`,
 				{
 					reply_markup: {
 						inline_keyboard: [
-							[{ text: '➡️ Продолжить', callback_data: 'photos_done' }],
+							[{ text: '➡️ Продолжить', callback_data: 'media_done' }],
 							[{ text: '« Отмена', callback_data: 'menu' }],
 						],
 					},
@@ -135,6 +170,12 @@ export class TelegramOfferService {
 			console.error('Ошибка при загрузке фото:', error)
 			await ctx.reply('❌ Произошла ошибка при загрузке фото')
 		}
+	}
+
+	// Добавляем метод валидации телефона
+	private validatePhone(phone: string): boolean {
+		const phoneRegex = /^\+?[0-9]{10,15}$/
+		return phoneRegex.test(phone)
 	}
 
 	async handleOfferInput(ctx: Context, text: string) {
@@ -157,25 +198,23 @@ export class TelegramOfferService {
 
 			case 'title':
 				state.title = text
-				state.inputType = 'breed'
-				await ctx.reply('🐮 Введите породу КРС:')
-				break
-
-			case 'breed':
-				state.breed = text
 				state.inputType = 'quantity'
+				this.offerStates.set(userId, state)
 				await ctx.reply('🔢 Введите количество голов:')
 				break
 
 			case 'quantity':
 				const quantity = parseInt(text)
 				if (isNaN(quantity) || quantity <= 0) {
-					await ctx.reply('❌ Введите корректное количество')
+					await ctx.reply(
+						'❌ Введите корректное количество (целое число больше 0)',
+					)
 					return
 				}
 				state.quantity = quantity
 				state.inputType = 'weight'
-				await ctx.reply('⚖️ Введите вес (кг):')
+				this.offerStates.set(userId, state)
+				await ctx.reply('⚖️ Введите вес одной головы (кг):')
 				break
 
 			case 'weight':
@@ -186,64 +225,130 @@ export class TelegramOfferService {
 				}
 				state.weight = weight
 				state.inputType = 'age'
+				this.offerStates.set(userId, state)
 				await ctx.reply('🌱 Введите возраст (месяцев):')
 				break
 
 			case 'age':
 				const age = parseInt(text)
 				if (isNaN(age) || age <= 0) {
-					await ctx.reply('❌ Введите корректный возраст')
-					return
-				}
-				state.age = age
-				state.inputType = 'price'
-				await ctx.reply('💰 Введите цену за голову (₽):')
-				break
-
-			case 'price':
-				const price = parseFloat(text)
-				if (isNaN(price) || price <= 0) {
-					await ctx.reply('❌ Введите корректную цену')
-					return
-				}
-				state.price = price
-				state.inputType = 'location'
-				await ctx.reply('📍 Введите регион:')
-				break
-
-			case 'location':
-				state.location = text
-				state.inputType = 'mercury'
-				await ctx.reply('📋 Введите RU-номер в системе "Меркурий":')
-				break
-
-			case 'mercury':
-				state.mercuryNumber = text
-				state.inputType = 'contact_person'
-				await ctx.reply('👤 Введите ФИО контактного лица:')
-				break
-
-			case 'contact_person':
-				state.contactPerson = text
-				state.inputType = 'contact_phone'
-				await ctx.reply('📱 Введите контактный телефон:')
-				break
-
-			case 'contact_phone':
-				if (!this.validatePhone(text)) {
 					await ctx.reply(
-						'❌ Неверный формат номера. Введите в формате +7XXXXXXXXXX',
+						'❌ Введите корректный возраст (целое число больше 0)',
 					)
 					return
 				}
-				state.contactPhone = text
+				state.age = age
+				state.inputType = 'cattle_type'
+				this.offerStates.set(userId, state)
+
+				// Запрашиваем тип КРС через кнопки
+				await ctx.reply('🐮 Выберите тип КРС:', {
+					reply_markup: {
+						inline_keyboard: [
+							[
+								{ text: '🥛 Телята', callback_data: 'cattle_type_CALVES' },
+								{ text: '🐂 Бычки', callback_data: 'cattle_type_BULL_CALVES' },
+							],
+							[
+								{ text: '🐄 Телки', callback_data: 'cattle_type_HEIFERS' },
+								{
+									text: '�� Нетели',
+									callback_data: 'cattle_type_BREEDING_HEIFERS',
+								},
+							],
+							[
+								{ text: '🦬 Быки', callback_data: 'cattle_type_BULLS' },
+								{ text: '🐄 Коровы', callback_data: 'cattle_type_COWS' },
+							],
+						],
+					},
+				})
+				break
+
+			case 'breed':
+				state.breed = text
+				state.inputType = 'purpose'
+				this.offerStates.set(userId, state)
+
+				// Запрашиваем назначение через кнопки
+				await ctx.reply('🎯 Выберите назначение КРС:', {
+					reply_markup: {
+						inline_keyboard: [
+							[
+								{ text: '🏪 Товарный', callback_data: 'purpose_COMMERCIAL' },
+								{ text: '🧬 Племенной', callback_data: 'purpose_BREEDING' },
+							],
+						],
+					},
+				})
+				break
+
+			case 'region':
+				state.region = text
 				state.inputType = 'description'
+				this.offerStates.set(userId, state)
 				await ctx.reply('📝 Введите дополнительное описание:')
 				break
 
 			case 'description':
 				state.description = text
 				await this.createOffer(ctx, state)
+				break
+
+			case 'price_per_head':
+				const pricePerHead = parseFloat(text)
+				if (isNaN(pricePerHead) || pricePerHead <= 0) {
+					await ctx.reply('❌ Введите корректную цену (число больше 0)')
+					return
+				}
+				state.pricePerHead = pricePerHead
+				state.inputType = 'ask_gkt_discount'
+				this.offerStates.set(userId, state)
+
+				// Спрашиваем про скидку ЖКТ через кнопки
+				await ctx.reply('Будет ли скидка на ЖКТ?', {
+					reply_markup: {
+						inline_keyboard: [
+							[
+								{ text: '✅ Да', callback_data: 'gkt_yes' },
+								{ text: '❌ Нет', callback_data: 'gkt_no' },
+							],
+						],
+					},
+				})
+				break
+
+			case 'gkt_discount':
+				const discount = parseFloat(text)
+				if (isNaN(discount) || discount < 0 || discount > 100) {
+					await ctx.reply('❌ Введите корректную скидку (число от 0 до 100)')
+					return
+				}
+				state.gktDiscount = discount
+				state.inputType = 'region'
+				this.offerStates.set(userId, state)
+				await ctx.reply('📍 Введите регион:')
+				break
+
+			case 'full_address':
+				state.fullAddress = text
+				state.inputType = 'customs_union'
+				await ctx.reply('Состоит ли в Реестре Таможенного Союза?', {
+					reply_markup: {
+						inline_keyboard: [
+							[
+								{ text: 'Да', callback_data: 'customs_yes' },
+								{ text: 'Нет', callback_data: 'customs_no' },
+							],
+						],
+					},
+				})
+				break
+
+			case 'video_url':
+				state.videoUrl = text
+				state.inputType = 'description'
+				await ctx.reply('📝 Введите дополнительное описание:')
 				break
 		}
 
@@ -277,6 +382,16 @@ export class TelegramOfferService {
 					mercuryNumber: state.mercuryNumber,
 					contactPerson: state.contactPerson,
 					contactPhone: state.contactPhone,
+					cattleType: state.cattleType || CattleType.CALVES,
+					purpose: state.purpose || CattlePurpose.COMMERCIAL,
+					priceType: state.priceType || PriceType.PER_HEAD,
+					pricePerKg: state.pricePerKg || 0,
+					pricePerHead: state.pricePerHead || 0,
+					gktDiscount: state.gktDiscount || 0,
+					region: state.region || state.location,
+					fullAddress: state.fullAddress || state.location,
+					customsUnion: false,
+					videoUrl: state.videoUrl,
 					images: {
 						create: state.photos.map(photo => ({
 							url: photo.url,
@@ -316,12 +431,22 @@ export class TelegramOfferService {
 🆕 Новое объявление на модерацию:
 
 📝 Название: ${offer.title}
-💰 Цена: ${offer.price} руб/голову
+🐮 Тип: ${this.getCattleTypeText(offer.cattleType)}
+🎯 Назначение: ${this.getPurposeText(offer.purpose)}
+💰 Цена: ${
+					offer.priceType === 'PER_HEAD'
+						? `${offer.pricePerHead} руб/голову`
+						: `${offer.pricePerKg} руб/кг`
+				}
+${offer.gktDiscount > 0 ? `🔻 Скидка на ЖКТ: ${offer.gktDiscount}%\n` : ''}
 🔢 Количество: ${offer.quantity} голов
 🐮 Порода: ${offer.breed}
 🌱 Возраст: ${offer.age} мес.
 ⚖️ Вес: ${offer.weight} кг
-📍 Локация: ${offer.location}
+📍 Регион: ${offer.region}
+📍 Полный адрес: ${offer.fullAddress}
+${offer.customsUnion ? '✅ Состоит в Реестре ТС\n' : '❌ Не состоит в Реестре ТС\n'}
+${offer.videoUrl ? `🎥 Видео: ${offer.videoUrl}\n` : ''}
 
 ${offer.description}
 
@@ -512,6 +637,27 @@ ${
 	}
 
 	async handleBrowseOffers(ctx: Context, page: number = 1) {
+		const userId = ctx.from.id
+
+		// Проверяем авторизацию пользователя
+		const user = await this.prisma.user.findUnique({
+			where: { telegramId: userId.toString() },
+		})
+
+		if (!user || !user.isVerified) {
+			await ctx.reply('❌ Для просмотра объявлений необходимо авторизоваться', {
+				reply_markup: {
+					inline_keyboard: [
+						[
+							{ text: '🔑 Войти', callback_data: 'login' },
+							{ text: '📝 Регистрация', callback_data: 'register' },
+						],
+					],
+				},
+			})
+			return
+		}
+
 		const ITEMS_PER_PAGE = 10
 		const skip = (page - 1) * ITEMS_PER_PAGE
 
@@ -689,13 +835,20 @@ ${
 		}
 
 		const offerDetails = `
+🐮 <b>${this.getCattleTypeText(offer.cattleType)}</b>
 ${offer.breed ? `🐄 Порода: ${offer.breed}\n` : ''}
+🎯 Назначение: ${this.getPurposeText(offer.purpose)}
 🔢 Количество: ${offer.quantity} голов
 ⚖️ Вес: ${offer.weight} кг
 🌱 Возраст: ${offer.age} мес.
-💰 Цена: ${offer.price.toLocaleString('ru-RU')} ₽/гол
-📍 Регион: ${this.getRegionOnly(offer.location)}
-
+💰 Цена: ${
+			offer.priceType === 'PER_HEAD'
+				? `${offer.pricePerHead.toLocaleString('ru-RU')} ₽/гол`
+				: `${offer.pricePerKg.toLocaleString('ru-RU')} ₽/кг`
+		}
+${offer.gktDiscount > 0 ? `🔻 Скидка на ЖКТ: ${offer.gktDiscount}%\n` : ''}
+📍 Регион: ${offer.region}
+${offer.videoUrl ? `🎥 <a href="${offer.videoUrl}">Смотреть видео</a>\n` : ''}
 📝 ${offer.description || 'Описание отсутствует'}`
 
 		await ctx.reply(offerDetails, {
@@ -713,6 +866,22 @@ ${offer.breed ? `🐄 Порода: ${offer.breed}\n` : ''}
 				],
 			},
 		})
+	}
+
+	private getCattleTypeText(type: string): string {
+		const types = {
+			CALVES: 'Телята',
+			BULL_CALVES: 'Бычки',
+			HEIFERS: 'Телки',
+			BREEDING_HEIFERS: 'Нетели',
+			BULLS: 'Быки',
+			COWS: 'Коровы',
+		}
+		return types[type] || type
+	}
+
+	private getPurposeText(purpose: string): string {
+		return purpose === 'COMMERCIAL' ? 'Товарный' : 'Племенной'
 	}
 
 	async showMyOffers(ctx: Context) {
@@ -778,71 +947,115 @@ ${
 		const userId = ctx.from.id
 		const state = this.offerStates.get(userId)
 
-		if (!state || !state.photos || state.photos.length === 0) {
-			await ctx.reply('❌ Необходимо добавить хотя бы одно фото')
+		if (!state) {
+			await ctx.reply('❌ Начните создание объявления заново')
 			return
 		}
 
+		// Проверяем наличие фото или видео
+		if (state.photos.length === 0 && state.videos.length === 0) {
+			await ctx.reply('❌ Необходимо добавить хотя бы один медиафайл')
+			return
+		}
+
+		// Устанавливаем следующий шаг
 		state.inputType = 'title'
 		this.offerStates.set(userId, state)
+
+		// Запрашиваем название
 		await ctx.reply('📝 Введите название объявления:')
 	}
 
-	async handleOfferTitleInput(ctx: Context, title: string) {
+	async startOfferCreation(ctx: Context) {
+		const userId = ctx.from.id
+
+		// Проверяем роль пользователя
+		const user = await this.prisma.user.findUnique({
+			where: { telegramId: userId.toString() },
+		})
+
+		if (!user) {
+			await ctx.reply('❌ Пожалуйста, сначала авторизуйтесь.')
+			return
+		}
+
+		if (user.role !== 'SUPPLIER') {
+			await ctx.reply(
+				'❌ Создавать объявления могут только поставщики.\n\n' +
+					'Если вы хотите стать поставщиком, пожалуйста, создайте новый аккаунт с соответствующей ролью.',
+			)
+			return
+		}
+
+		// Инициализируем состояние с пустыми массивами для фото и видео
+		this.offerStates.set(userId, { photos: [], videos: [] })
+		await ctx.reply(
+			'📸 Загрузите медиафайлы КРС (до 5 файлов)\n\n' +
+				'✅ Рекомендуется:\n' +
+				'• Фотографии животных в полный рост\n' +
+				'• Съемка при хорошем освещении\n' +
+				'• Фото с разных ракурсов\n' +
+				'• Видео с обходом животных\n\n' +
+				'⚠️ Поддерживаются фото и видео до 50MB',
+			{
+				reply_markup: {
+					inline_keyboard: [
+						[{ text: '➡️ Продолжить', callback_data: 'media_done' }],
+						[{ text: '« Отмена', callback_data: 'menu' }],
+					],
+				},
+			},
+		)
+	}
+
+	// Добавляем обработчик видео
+	async handleVideo(ctx: Context) {
 		const userId = ctx.from.id
 		const state = this.offerStates.get(userId)
+		//@ts-ignore
+		const video = ctx.message.video
 
 		if (!state) {
 			await ctx.reply('❌ Начните создание объявления заново')
 			return
 		}
 
-		state.title = title
-		state.inputType = 'quantity'
-		this.offerStates.set(userId, state)
-		await ctx.reply('🔢 Введите количество голов:')
-	}
-
-	private validatePhone(phone: string): boolean {
-		const phoneRegex = /^\+?[0-9]{10,15}$/
-		return phoneRegex.test(phone)
-	}
-
-	async askForDetail(
-		ctx: Context,
-		userId: number,
-		detail: string,
-		emoji: string,
-		nextStep: string,
-	) {
-		const offerState = this.offerStates.get(userId)
-
-		// Не устанавливаем флаг, а сразу подготавливаем поле для значения
-		if (nextStep === 'description') {
-			offerState.description = null // Инициализируем поле для описания
+		const totalFiles = state.photos.length + state.videos.length
+		if (totalFiles >= 5) {
+			await ctx.reply('❌ Достигнут лимит файлов (максимум 5)')
+			return
 		}
 
-		this.offerStates.set(userId, offerState)
+		if (video.file_size > 50 * 1024 * 1024) {
+			await ctx.reply(
+				'❌ Размер видео превышает 50MB. Пожалуйста, отправьте файл меньшего размера.',
+			)
+			return
+		}
 
-		await ctx.reply(`${emoji} Введите ${detail}:`, {
-			reply_markup: {
-				inline_keyboard: [[Markup.button.callback('« Назад', 'create_offer')]],
-			},
-		})
-	}
+		// Получаем ссылку на файл
+		const fileLink = await ctx.telegram.getFile(video.file_id)
+		const videoUrl = `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${fileLink.file_path}`
 
-	async startOfferCreation(ctx: Context) {
-		const userId = ctx.from.id
-		this.offerStates.set(userId, { photos: [] })
+		// Сохраняем ссылку на видео в состоянии
+		state.videos.push({ url: videoUrl })
+		this.offerStates.set(userId, state)
+
 		await ctx.reply(
-			'📸 Для начала отправьте фотографии КРС (до 5 фото)\n\nКогда закончите добавлять фото, нажмите "Продолжить"',
+			`✅ Видео ${totalFiles + 1}/5 загружено\n\nДобавьте еще файлы или нажмите "Продолжить"`,
 			{
 				reply_markup: {
 					inline_keyboard: [
-						[{ text: '➡️ Продолжить', callback_data: 'photos_done' }],
+						[{ text: '➡️ Продолжить', callback_data: 'media_done' }],
+						[{ text: '« Отмена', callback_data: 'menu' }],
 					],
 				},
 			},
 		)
+	}
+
+	// Добавляем публичный метод для обновления состояния
+	updateOfferState(userId: number, state: OfferState): void {
+		this.offerStates.set(userId, state)
 	}
 }
