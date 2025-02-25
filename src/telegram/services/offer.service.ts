@@ -7,6 +7,7 @@ import { Context, Markup } from 'telegraf'
 import { CallbackQuery } from 'telegraf/typings/core/types/typegram'
 import { S3Service } from '../../common/services/s3.service'
 import { PrismaService } from '../../prisma.service'
+import { TelegramProfileService } from '../services/profile.service'
 import { TelegramClient } from '../telegram.client'
 
 interface UploadedFile {
@@ -40,12 +41,12 @@ interface OfferState {
 	priceType?: PriceType
 	pricePerKg?: number
 	pricePerHead?: number
-	gktDiscount?: number
+	gutDiscount?: number
 	region?: string
 	fullAddress?: string
 	customsUnion?: boolean
 	videoUrl?: string
-	addingGktDiscount?: boolean
+	addingGutDiscount?: boolean
 }
 
 @Injectable()
@@ -57,6 +58,7 @@ export class TelegramOfferService {
 		private s3Service: S3Service,
 		private configService: ConfigService,
 		private telegramClient: TelegramClient,
+		private profileService: TelegramProfileService,
 	) {}
 
 	async handleCreateOffer(ctx: Context) {
@@ -358,7 +360,7 @@ export class TelegramOfferService {
 					await ctx.reply('❌ Введите корректную скидку (число от 0 до 100)')
 					return
 				}
-				state.gktDiscount = discount
+				state.gutDiscount = discount
 				state.inputType = 'region'
 				this.offerStates.set(userId, state)
 				await ctx.reply('📍 Введите регион:')
@@ -434,7 +436,7 @@ export class TelegramOfferService {
 				priceType: state.priceType || PriceType.PER_HEAD,
 				pricePerKg: state.pricePerKg || 0,
 				pricePerHead: state.pricePerHead || 0,
-				gktDiscount: state.gktDiscount || 0,
+				gutDiscount: state.gutDiscount || 0,
 				region: state.region || state.location,
 				location: state.region || '',
 				fullAddress: state.fullAddress || state.region,
@@ -505,7 +507,7 @@ export class TelegramOfferService {
 						? `${offer.pricePerHead} руб/голову`
 						: `${offer.pricePerKg} руб/кг`
 				}
-${offer.gktDiscount > 0 ? `🔻 Скидка на ЖКТ: ${offer.gktDiscount}%\n` : ''}
+${offer.gutDiscount > 0 ? `🔻 Скидка на ЖКТ: ${offer.gutDiscount}%\n` : ''}
 🔢 Количество: ${offer.quantity} голов
 🐮 Порода: ${offer.breed}
 🌱 Возраст: ${offer.age} мес.
@@ -807,80 +809,191 @@ ${
 	}
 
 	// Обработчик запроса контактов
-	async handleContactRequest(ctx: Context) {
-		const callbackQuery = ctx.callbackQuery as CallbackQuery.DataQuery
-		const offerId = callbackQuery.data.split('_')[2]
-		const userId = ctx.from.id
+	async handleContactRequest(ctx) {
+		try {
+			await ctx.answerCbQuery()
+			const userId = ctx.from.id
+			const callbackData = ctx.callbackQuery.data
+			const offerId = callbackData.replace('request_contact_', '')
 
-		const [user, offer] = await Promise.all([
-			this.prisma.user.findUnique({
+			// Получаем пользователя
+			const user = await this.prisma.user.findUnique({
 				where: { telegramId: userId.toString() },
-			}),
-			this.prisma.offer.findUnique({
-				where: { id: offerId },
-				include: { user: true },
-			}),
-		])
+			})
 
-		await ctx.reply(
-			'📱 Запрос на получение контактов отправлен администратору',
-			{
-				reply_markup: {
-					inline_keyboard: [
-						[{ text: '« Назад', callback_data: `view_offer_${offerId}` }],
-						[{ text: '« Меню', callback_data: 'menu' }],
-					],
-				},
-			},
-		)
-
-		// Уведомляем админов
-		const admins = await this.prisma.user.findMany({
-			where: { role: 'ADMIN' },
-		})
-
-		const approveUrl = `${process.env.API_URL}/api/approve-contacts?offerId=${offerId}&userId=${user.id}`
-
-		const adminMessage = `
-🔔 Новый запрос на контакты
-
-От кого:
-👤 ${user.name}
-📧 ${user.email}
-📱 ${user.phone || 'Телефон не указан'}
-
-Запрашивает информацию по объявлению:
-🐮 ${offer.breed || 'КРС'}
-💰 ${offer.price.toLocaleString('ru-RU')}₽/гол
-🔢 ${offer.quantity} голов
-📍 ${this.getRegionOnly(offer.location)}
-
-<a href="${approveUrl}">🔗 Разрешить доступ к контактам</a>`
-
-		for (const admin of admins) {
-			if (admin.telegramId) {
-				await this.telegramClient.sendMessage(admin.telegramId, adminMessage, {
-					parse_mode: 'HTML',
-					disable_web_page_preview: true,
-				})
+			if (!user) {
+				await ctx.reply('❌ Пользователь не найден')
+				return
 			}
+
+			// Получаем объявление с информацией о владельце
+			const offer = await this.prisma.offer.findUnique({
+				where: { id: offerId },
+				include: {
+					user: true,
+				},
+			})
+
+			if (!offer) {
+				await ctx.reply('❌ Объявление не найдено')
+				return
+			}
+
+			// Проверяем, не является ли пользователь владельцем объявления
+			if (offer.userId === user.id) {
+				await ctx.reply('❌ Вы не можете запросить контакты своего объявления')
+				return
+			}
+
+			// Проверяем, не запрашивал ли пользователь уже контакты
+			const existingRequest = await this.prisma.contactRequest.findFirst({
+				where: {
+					offerId: offer.id,
+					requesterId: user.id,
+				},
+			})
+
+			if (existingRequest) {
+				if (existingRequest.status === 'APPROVED') {
+					// Если запрос уже одобрен, показываем контакты
+					await ctx.reply(
+						`📞 <b>Контактная информация:</b>\n\n` +
+							`👤 Контактное лицо: ${offer.contactPerson || offer.user.name}\n` +
+							`📱 Телефон: ${offer.contactPhone || offer.user.phone || 'Не указан'}\n` +
+							`📧 Email: ${offer.user.email}`,
+						{
+							parse_mode: 'HTML',
+							reply_markup: {
+								inline_keyboard: [
+									[
+										{
+											text: '💬 Написать сообщение',
+											callback_data: `send_message_${offer.userId}`,
+										},
+									],
+									[
+										{
+											text: '« Назад',
+											callback_data: `view_offer_${offer.id}`,
+										},
+									],
+								],
+							},
+						},
+					)
+				} else if (existingRequest.status === 'PENDING') {
+					await ctx.reply(
+						'⏳ Ваш запрос на получение контактов уже отправлен и ожидает рассмотрения.',
+						{
+							reply_markup: {
+								inline_keyboard: [
+									[
+										{
+											text: '« Назад',
+											callback_data: `view_offer_${offer.id}`,
+										},
+									],
+								],
+							},
+						},
+					)
+				} else {
+					await ctx.reply(
+						'❌ Ваш запрос на получение контактов был отклонен продавцом.',
+						{
+							reply_markup: {
+								inline_keyboard: [
+									[
+										{
+											text: '« Назад',
+											callback_data: `view_offer_${offer.id}`,
+										},
+									],
+								],
+							},
+						},
+					)
+				}
+				return
+			}
+
+			// Создаем запрос на контакты
+			await this.prisma.contactRequest.create({
+				data: {
+					offer: { connect: { id: offer.id } },
+					requester: { connect: { id: user.id } },
+					status: 'PENDING',
+				},
+			})
+
+			// Отправляем уведомление владельцу объявления
+			if (offer.user.telegramId) {
+				await this.telegramClient.sendMessage(
+					offer.user.telegramId,
+					`📬 <b>Новый запрос на контакты</b>\n\n` +
+						`Пользователь ${user.name || user.email} запрашивает контактные данные для вашего объявления "${offer.title}".\n\n` +
+						`Вы можете одобрить или отклонить этот запрос.`,
+					{
+						parse_mode: 'HTML',
+						reply_markup: {
+							inline_keyboard: [
+								[
+									{
+										text: '✅ Одобрить',
+										callback_data: `approve_contact_${user.id}_${offer.id}`,
+									},
+									{
+										text: '❌ Отклонить',
+										callback_data: `reject_contact_${user.id}_${offer.id}`,
+									},
+								],
+							],
+						},
+					},
+				)
+			}
+
+			await ctx.reply(
+				'✅ Запрос на получение контактов отправлен.\n\n' +
+					'Вы получите уведомление, когда продавец ответит на ваш запрос.',
+				{
+					reply_markup: {
+						inline_keyboard: [
+							[{ text: '« Назад', callback_data: `view_offer_${offer.id}` }],
+						],
+					},
+				},
+			)
+		} catch (error) {
+			console.error('Ошибка при запросе контактов:', error)
+			await ctx.reply('❌ Произошла ошибка при запросе контактов')
 		}
 	}
 
 	async handleViewOffer(ctx: Context) {
 		try {
+			// Получаем ID объявления из callback_data
 			const callbackQuery = ctx.callbackQuery as CallbackQuery.DataQuery
-			const offerId = callbackQuery.data.replace('view_offer_', '')
+			let offerId = callbackQuery.data.replace('view_offer_', '')
+
+			// Очищаем ID от возможных лишних символов
+			if (offerId.includes('@')) {
+				offerId = offerId.split('@')[0]
+			}
+
+			console.log(`Просмотр объявления с ID: ${offerId}`)
 
 			// Отправляем сообщение о загрузке
 			const loadingMessage = await ctx.reply('⏳ Загрузка объявления...')
 
+			// Получаем объявление из базы данных
 			const offer = await this.prisma.offer.findUnique({
 				where: { id: offerId },
-				include: { images: true },
+				include: { images: true, user: true },
 			})
 
 			if (!offer) {
+				console.log(`Объявление с ID ${offerId} не найдено`)
 				await ctx.telegram.editMessageText(
 					ctx.chat.id,
 					loadingMessage.message_id,
@@ -890,135 +1003,115 @@ ${
 				return
 			}
 
-			// Формируем текст объявления
-			const offerText = this.formatOfferText(offer)
+			console.log(`Объявление найдено: ${offer.title}`)
 
-			try {
-				// Удаляем сообщение о загрузке
-				await ctx.telegram.deleteMessage(ctx.chat.id, loadingMessage.message_id)
+			// Удаляем сообщение о загрузке
+			await ctx.telegram.deleteMessage(ctx.chat.id, loadingMessage.message_id)
 
-				// 1. Сначала отправляем видео, если оно есть
-				if (offer.videoUrl && offer.videoUrl !== '-') {
-					const videoLoadingMsg = await ctx.reply('🎥 Загрузка видео...')
+			// 1. Сначала отправляем видео, если оно есть
+			if (offer.videoUrl && offer.videoUrl !== '-') {
+				const videoLoadingMsg = await ctx.reply('🎥 Загрузка видео...')
 
-					try {
-						if (
-							offer.videoUrl.includes('youtube.com') ||
-							offer.videoUrl.includes('youtu.be')
-						) {
-							await ctx.telegram.deleteMessage(
-								ctx.chat.id,
-								videoLoadingMsg.message_id,
-							)
-							await ctx.reply(
-								`🎥 <a href="${offer.videoUrl}">Смотреть видео</a>`,
-								{
-									parse_mode: 'HTML',
-								},
-							)
-						} else {
-							await ctx.replyWithVideo(offer.videoUrl)
-							await ctx.telegram.deleteMessage(
-								ctx.chat.id,
-								videoLoadingMsg.message_id,
-							)
-						}
-					} catch (videoError) {
-						console.error('Ошибка при отправке видео:', videoError)
-						await ctx.telegram.editMessageText(
+				try {
+					if (
+						offer.videoUrl.includes('youtube.com') ||
+						offer.videoUrl.includes('youtu.be')
+					) {
+						await ctx.telegram.deleteMessage(
 							ctx.chat.id,
 							videoLoadingMsg.message_id,
-							undefined,
+						)
+						await ctx.reply(
 							`🎥 <a href="${offer.videoUrl}">Смотреть видео</a>`,
-							{ parse_mode: 'HTML' },
+							{
+								parse_mode: 'HTML',
+							},
+						)
+					} else {
+						await ctx.replyWithVideo(offer.videoUrl)
+						await ctx.telegram.deleteMessage(
+							ctx.chat.id,
+							videoLoadingMsg.message_id,
 						)
 					}
-				}
-
-				// 2. Затем отправляем фотографии, если они есть
-				if (offer.images && offer.images.length > 0) {
-					if (offer.images.length === 1) {
-						// Если фотография одна, отправляем ее отдельно
-						await ctx.replyWithPhoto(offer.images[0].url)
-					} else if (offer.images.length > 1) {
-						// Если фотографий несколько, отправляем их как медиагруппу
-						const mediaGroup = offer.images.slice(0, 10).map(image => ({
-							type: 'photo',
-							media: image.url,
-						}))
-
-						// @ts-ignore - типы Telegraf не полностью поддерживают медиагруппы
-						await ctx.replyWithMediaGroup(mediaGroup)
-					}
-				}
-
-				// 3. Наконец, отправляем текст объявления с кнопками
-				// Используем оба варианта кнопки "Назад" для надежности
-				await ctx.reply(offerText, {
-					parse_mode: 'HTML',
-					reply_markup: {
-						inline_keyboard: [
-							[
-								{
-									text: '📞 Запросить контакты',
-									callback_data: `request_contacts_${offer.id}`,
-								},
-							],
-							[
-								{
-									text: '« Назад к списку',
-									callback_data: 'back_to_offers_list',
-								},
-							],
-							[
-								{
-									text: '« Меню',
-									callback_data: 'menu',
-								},
-							],
-						],
-					},
-				})
-			} catch (error) {
-				console.error('Ошибка при отправке объявления:', error)
-
-				// В случае ошибки, отправляем только текст
-				await ctx.reply(offerText, {
-					parse_mode: 'HTML',
-					reply_markup: {
-						inline_keyboard: [
-							[
-								{
-									text: '📞 Запросить контакты',
-									callback_data: `request_contacts_${offer.id}`,
-								},
-							],
-							[
-								{
-									text: '« Назад к списку',
-									callback_data: 'back_to_offers_list',
-								},
-							],
-							[
-								{
-									text: '« Меню',
-									callback_data: 'menu',
-								},
-							],
-						],
-					},
-				})
-
-				// Если есть видео, добавляем ссылку на него
-				if (offer.videoUrl && offer.videoUrl !== '-') {
-					await ctx.reply(`🎥 <a href="${offer.videoUrl}">Смотреть видео</a>`, {
-						parse_mode: 'HTML',
-					})
+				} catch (videoError) {
+					console.error('Ошибка при отправке видео:', videoError)
+					await ctx.telegram.editMessageText(
+						ctx.chat.id,
+						videoLoadingMsg.message_id,
+						undefined,
+						`🎥 <a href="${offer.videoUrl}">Смотреть видео</a>`,
+						{ parse_mode: 'HTML' },
+					)
 				}
 			}
+
+			// 2. Затем отправляем фотографии, если они есть
+			if (offer.images && offer.images.length > 0) {
+				console.log(`Найдено ${offer.images.length} изображений`)
+
+				if (offer.images.length === 1) {
+					// Если фотография одна, отправляем ее отдельно
+					await ctx.replyWithPhoto(offer.images[0].url)
+				} else if (offer.images.length > 1) {
+					// Если фотографий несколько, отправляем их как медиагруппу
+					const mediaGroup = offer.images.slice(0, 10).map(image => ({
+						type: 'photo',
+						media: image.url,
+					}))
+
+					console.log('Отправка медиагруппы:', mediaGroup)
+
+					try {
+						// @ts-ignore - типы Telegraf не полностью поддерживают медиагруппы
+						await ctx.replyWithMediaGroup(mediaGroup)
+					} catch (mediaError) {
+						console.error('Ошибка при отправке медиагруппы:', mediaError)
+						// В случае ошибки отправляем фотографии по одной
+						for (const image of offer.images) {
+							try {
+								await ctx.replyWithPhoto(image.url)
+							} catch (singlePhotoError) {
+								console.error('Ошибка при отправке фото:', singlePhotoError)
+							}
+						}
+					}
+				}
+			} else {
+				console.log('Изображения не найдены')
+			}
+
+			// 3. Наконец, отправляем текст объявления с кнопками
+			console.log('Отправка текста объявления')
+			const offerText = this.formatOfferText(offer)
+			await ctx.reply(offerText, {
+				parse_mode: 'HTML',
+				reply_markup: {
+					inline_keyboard: [
+						[
+							{
+								text: '📞 Запросить контакты',
+								callback_data: `request_contacts_${offer.id}`,
+							},
+						],
+						[
+							{
+								text: '« Назад к списку',
+								callback_data: 'back_to_offers_list',
+							},
+						],
+						[
+							{
+								text: '« Меню',
+								callback_data: 'menu',
+							},
+						],
+					],
+				},
+			})
 		} catch (error) {
 			console.error('Ошибка при просмотре объявления:', error)
-			await ctx.reply('❌ Произошла ошибка при загрузке объявления')
+			await ctx.reply(`❌ Произошла ошибка: ${error.message}`)
 		}
 	}
 
@@ -1039,7 +1132,7 @@ ${
 				? `${offer.pricePerHead.toLocaleString('ru-RU')} ₽/голову`
 				: `${offer.pricePerKg.toLocaleString('ru-RU')} ₽/кг`
 		}
-${offer.gktDiscount > 0 ? `🔻 Скидка на ЖКТ: ${offer.gktDiscount}%\n` : ''}
+${offer.gutDiscount > 0 ? `🔻 Скидка на ЖКТ: ${offer.gutDiscount}%\n` : ''}
 📍 Регион: ${offer.region}
 📝 ${offer.description || 'Описание отсутствует'}`
 	}
@@ -1062,58 +1155,76 @@ ${offer.gktDiscount > 0 ? `🔻 Скидка на ЖКТ: ${offer.gktDiscount}%\
 	}
 
 	async showMyOffers(ctx: Context) {
-		const userId = ctx.from.id
-		const user = await this.prisma.user.findUnique({
-			where: { telegramId: userId.toString() },
-			include: {
-				offers: {
-					include: {
-						images: true,
-						matches: true,
-					},
-					orderBy: {
-						createdAt: 'desc',
+		try {
+			const userId = ctx.from.id
+			const user = await this.prisma.user.findUnique({
+				where: { telegramId: userId.toString() },
+				include: {
+					offers: {
+						include: {
+							images: true,
+							matches: true,
+						},
 					},
 				},
-			},
-		})
+			})
 
-		if (!user.offers.length) {
-			await ctx.reply(
-				'❌ У вас пока нет объявлений.\n\nИспользуйте команду /create_offer для создания нового объявления.',
-				Markup.inlineKeyboard([
-					[Markup.button.callback('📝 Создать объявление', 'create_offer')],
-				]),
-			)
-			return
+			if (!user) {
+				await ctx.reply('❌ Пользователь не найден')
+				return
+			}
+
+			// Проверяем, является ли пользователь поставщиком
+			if (user.role !== 'SUPPLIER') {
+				await ctx.reply(
+					'❌ Только поставщики могут иметь объявления.\n\n' +
+						'Если вы хотите стать поставщиком, пожалуйста, создайте новый аккаунт с соответствующей ролью.',
+				)
+				return
+			}
+
+			if (!user.offers.length) {
+				await ctx.reply(
+					'📭 У вас пока нет объявлений.\n\n' +
+						'Используйте кнопку "Создать объявление" для создания нового объявления.',
+					{
+						reply_markup: {
+							inline_keyboard: [
+								[{ text: '📝 Создать объявление', callback_data: 'create_ad' }],
+								[{ text: '« Меню', callback_data: 'menu' }],
+							],
+						},
+					},
+				)
+				return
+			}
+
+			// Формируем сообщение со списком объявлений
+			let message = `📋 <b>Ваши объявления:</b>\n\n`
+
+			// Создаем кнопки для каждого объявления
+			const offerButtons = user.offers.map((offer, index) => [
+				Markup.button.callback(
+					`${index + 1}. ${offer.title} - ${offer.price}₽ - ${offer.matches.length} заявок`,
+					`view_offer_${offer.id}`,
+				),
+			])
+
+			// Добавляем кнопки навигации
+			offerButtons.push([
+				Markup.button.callback('📝 Создать новое объявление', 'create_ad'),
+				Markup.button.callback('« Меню', 'menu'),
+			])
+
+			// Отправляем сообщение с кнопками
+			await ctx.reply(message, {
+				parse_mode: 'HTML',
+				reply_markup: { inline_keyboard: offerButtons },
+			})
+		} catch (error) {
+			console.error('Ошибка при отображении списка своих объявлений:', error)
+			await ctx.reply('❌ Произошла ошибка при загрузке ваших объявлений')
 		}
-
-		const offersList = user.offers
-			.map(
-				(offer, index) => `
-${index + 1}. <b>${offer.title}</b>
-🔢 ${offer.quantity} голов
-⚖️ ${offer.weight} кг
-🌱 ${offer.age} мес.
-💰 ${offer.price} ₽/гол
-📍 ${offer.location}
-${
-	offer.status === 'PENDING'
-		? '⏳ На проверке'
-		: offer.matches.length > 0
-			? `✅ Заявок: ${offer.matches.length}`
-			: ''
-}`,
-			)
-			.join('\n\n')
-
-		await ctx.reply(`📋 <b>Ваши объявления:</b>\n${offersList}`, {
-			parse_mode: 'HTML',
-			...Markup.inlineKeyboard([
-				[Markup.button.callback('📝 Создать новое объявление', 'create_offer')],
-				[Markup.button.callback('« Назад', 'menu')],
-			]),
-		})
 	}
 
 	getOfferState(userId: number): OfferState | undefined {
@@ -1182,50 +1293,102 @@ ${
 		)
 	}
 
-	// Добавляем обработчик видео
+	// Добавляем метод handleVideo, который вызывается в telegram.service.ts
 	async handleVideo(ctx: Context) {
-		const userId = ctx.from.id
-		const state = this.offerStates.get(userId)
-		//@ts-ignore
-		const video = ctx.message.video
+		try {
+			const userId = ctx.from.id
+			const state = this.getOfferState(userId)
 
-		if (!state) {
-			await ctx.reply('❌ Начните создание объявления заново')
-			return
-		}
+			if (!state) {
+				await ctx.reply('❌ Начните создание объявления заново')
+				return
+			}
 
-		const totalFiles = state.photos.length + state.videos.length
-		if (totalFiles >= 5) {
-			await ctx.reply('❌ Достигнут лимит файлов (максимум 5)')
-			return
-		}
+			// Проверяем лимит файлов
+			const totalFiles =
+				(state.photos?.length || 0) + (state.videos?.length || 0)
+			if (totalFiles >= 5) {
+				await ctx.reply('❌ Достигнут лимит медиафайлов (максимум 5)')
+				return
+			}
 
-		if (video.file_size > 50 * 1024 * 1024) {
+			// Получаем видео
+			const message = ctx.message
+			if (!('video' in message)) {
+				await ctx.reply('❌ Не удалось получить видео')
+				return
+			}
+
+			const video = message.video
+
+			// Проверяем размер видео
+			if (video.file_size > 50 * 1024 * 1024) {
+				await ctx.reply(
+					'❌ Размер видео превышает 50MB. Пожалуйста, отправьте файл меньшего размера.',
+				)
+				return
+			}
+
+			const fileId = video.file_id
+
+			// Получаем информацию о файле
+			const fileInfo = await ctx.telegram.getFile(fileId)
+			const fileUrl = `https://api.telegram.org/file/bot${this.configService.get('TELEGRAM_BOT_TOKEN')}/${fileInfo.file_path}`
+
+			// Загружаем файл в буфер
+			const response = await fetch(fileUrl)
+			const buffer = await response.buffer()
+
+			// Создаем объект файла для загрузки в S3
+			const file: UploadedFile = {
+				buffer,
+				originalname: `video_${Date.now()}.mp4`,
+				mimetype: 'video/mp4',
+				fieldname: 'video',
+				encoding: '7bit',
+				size: buffer.length,
+			}
+
+			// Загружаем файл в S3
+			const uploadedFile = await this.s3Service.uploadFile(file)
+
+			// Добавляем видео в состояние
+			if (!state.videos) {
+				state.videos = []
+			}
+			state.videos.push({
+				url: uploadedFile.url,
+			})
+
+			// Сохраняем URL видео для объявления
+			state.videoUrl = uploadedFile.url
+
+			this.updateOfferState(userId, state)
+
+			// Обновляем счетчик файлов
+			const newTotalFiles =
+				(state.photos?.length || 0) + (state.videos?.length || 0)
+			const remainingFiles = 5 - newTotalFiles
+
+			// Отправляем сообщение о загрузке видео
 			await ctx.reply(
-				'❌ Размер видео превышает 50MB. Пожалуйста, отправьте файл меньшего размера.',
-			)
-			return
-		}
-
-		// Получаем ссылку на файл
-		const fileLink = await ctx.telegram.getFile(video.file_id)
-		const videoUrl = `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${fileLink.file_path}`
-
-		// Сохраняем ссылку на видео в состоянии
-		state.videos.push({ url: videoUrl })
-		this.offerStates.set(userId, state)
-
-		await ctx.reply(
-			`✅ Видео ${totalFiles + 1}/5 загружено\n\nДобавьте еще файлы или нажмите "Продолжить"`,
-			{
-				reply_markup: {
-					inline_keyboard: [
-						[{ text: '➡️ Продолжить', callback_data: 'media_done' }],
-						[{ text: '« Отмена', callback_data: 'menu' }],
-					],
+				`✅ Видео загружено (${newTotalFiles}/5)\n\n${
+					remainingFiles > 0
+						? `Вы можете загрузить еще ${remainingFiles} медиафайл(ов) или нажать кнопку "Готово" для продолжения.`
+						: 'Достигнут лимит медиафайлов. Нажмите "Готово" для продолжения.'
+				}`,
+				{
+					reply_markup: {
+						inline_keyboard: [
+							[{ text: '✅ Готово', callback_data: 'media_done' }],
+						],
+					},
 				},
-			},
-		)
+			)
+		} catch (error) {
+			console.error('Ошибка при загрузке видео:', error)
+			await ctx.reply('❌ Произошла ошибка при загрузке видео')
+		}
 	}
 
 	// Добавляем публичный метод для обновления состояния
@@ -1328,6 +1491,682 @@ ${
 		} catch (error) {
 			console.error('Ошибка при загрузке видео:', error)
 			await ctx.reply('❌ Произошла ошибка при загрузке видео')
+		}
+	}
+
+	// Добавляем метод для отображения деталей объявления
+	async showOfferDetails(ctx: Context, offerId: string) {
+		try {
+			const userId = ctx.from.id
+			const user = await this.prisma.user.findUnique({
+				where: { telegramId: userId.toString() },
+			})
+
+			if (!user) {
+				await ctx.reply('❌ Пользователь не найден')
+				return
+			}
+
+			// Получаем объявление с изображениями и информацией о пользователе
+			const offer = await this.prisma.offer.findUnique({
+				where: { id: offerId },
+				include: {
+					images: true,
+					user: true,
+					matches: true,
+				},
+			})
+
+			if (!offer) {
+				await ctx.reply('❌ Объявление не найдено')
+				return
+			}
+
+			// Формируем сообщение с деталями объявления
+			const message = this.formatOfferText(offer)
+
+			// Создаем кнопки для действий с объявлением
+			const buttons = []
+
+			// Если пользователь является владельцем объявления
+			if (offer.userId === user.id) {
+				buttons.push([
+					Markup.button.callback('✏️ Редактировать', `edit_offer_${offer.id}`),
+					Markup.button.callback('❌ Удалить', `delete_offer_${offer.id}`),
+				])
+
+				// Если есть совпадения, добавляем кнопку для просмотра
+				if (offer.matches && offer.matches.length > 0) {
+					buttons.push([
+						Markup.button.callback(
+							`👁️ Просмотр заявок (${offer.matches.length})`,
+							`view_matches_${offer.id}`,
+						),
+					])
+				}
+			}
+			// Если пользователь не является владельцем объявления и является покупателем
+			else if (user.role === 'BUYER') {
+				buttons.push([
+					Markup.button.callback(
+						'📞 Запросить контакты',
+						`request_contacts_${offer.id}`,
+					),
+					Markup.button.callback(
+						'💬 Написать сообщение',
+						`send_message_${offer.userId}`,
+					),
+				])
+
+				buttons.push([
+					Markup.button.callback(
+						'🛒 Создать заявку',
+						`create_request_for_${offer.id}`,
+					),
+				])
+			}
+
+			// Добавляем кнопки навигации
+			buttons.push([
+				Markup.button.callback('« Назад к объявлениям', 'my_ads'),
+				Markup.button.callback('« Меню', 'menu'),
+			])
+
+			// Если есть изображения, отправляем их
+			if (offer.images && offer.images.length > 0) {
+				// Отправляем первое изображение с текстом и кнопками
+				const firstImage = offer.images[0]
+				await ctx.replyWithPhoto(
+					{ url: firstImage.url },
+					{
+						caption: message,
+						parse_mode: 'HTML',
+						reply_markup: { inline_keyboard: buttons },
+					},
+				)
+
+				// Отправляем остальные изображения, если они есть
+				for (let i = 1; i < offer.images.length; i++) {
+					await ctx.replyWithPhoto({ url: offer.images[i].url })
+				}
+
+				// Если есть видео, отправляем его
+				if (offer.videoUrl) {
+					await ctx.replyWithVideo({ url: offer.videoUrl })
+				}
+			} else if (offer.videoUrl) {
+				// Если нет изображений, но есть видео, отправляем видео с текстом и кнопками
+				await ctx.replyWithVideo(
+					{ url: offer.videoUrl },
+					{
+						caption: message,
+						parse_mode: 'HTML',
+						reply_markup: { inline_keyboard: buttons },
+					},
+				)
+			} else {
+				// Если нет ни изображений, ни видео, отправляем только текст с кнопками
+				await ctx.reply(message, {
+					parse_mode: 'HTML',
+					reply_markup: { inline_keyboard: buttons },
+				})
+			}
+		} catch (error) {
+			console.error('Ошибка при отображении деталей объявления:', error)
+			await ctx.reply('❌ Произошла ошибка при отображении объявления')
+		}
+	}
+
+	// Добавляем метод для отображения списка объявлений
+	async showOffersList(ctx: Context, page: number = 1) {
+		try {
+			const userId = ctx.from.id
+			const user = await this.prisma.user.findUnique({
+				where: { telegramId: userId.toString() },
+			})
+
+			if (!user) {
+				await ctx.reply('❌ Пользователь не найден')
+				return
+			}
+
+			const pageSize = 5 // Количество объявлений на странице
+			const skip = (page - 1) * pageSize
+
+			// Получаем объявления с пагинацией
+			const [offers, totalCount] = await Promise.all([
+				this.prisma.offer.findMany({
+					where: { status: 'ACTIVE' },
+					include: {
+						images: true,
+						user: true,
+					},
+					orderBy: { createdAt: 'desc' },
+					skip,
+					take: pageSize,
+				}),
+				this.prisma.offer.count({
+					where: { status: 'ACTIVE' },
+				}),
+			])
+
+			if (offers.length === 0) {
+				await ctx.reply('📭 Пока нет доступных объявлений')
+				return
+			}
+
+			// Формируем сообщение со списком объявлений
+			let message = `📋 <b>Доступные объявления (${page}/${Math.ceil(totalCount / pageSize)}):</b>\n\n`
+
+			// Создаем кнопки для каждого объявления
+			const offerButtons = offers.map(offer => [
+				Markup.button.callback(
+					`${offer.title} - ${offer.price}₽ - ${offer.location}`,
+					`view_offer_${offer.id}`,
+				),
+			])
+
+			// Добавляем кнопки пагинации
+			const paginationButtons = []
+
+			if (page > 1) {
+				paginationButtons.push(
+					Markup.button.callback('⬅️ Предыдущая', `browse_offers_${page - 1}`),
+				)
+			}
+
+			if (page * pageSize < totalCount) {
+				paginationButtons.push(
+					Markup.button.callback('➡️ Следующая', `browse_offers_${page + 1}`),
+				)
+			}
+
+			// Добавляем кнопки навигации
+			const navigationButtons = [Markup.button.callback('« Меню', 'menu')]
+
+			// Объединяем все кнопки
+			const keyboard = [
+				...offerButtons,
+				paginationButtons.length > 0 ? paginationButtons : [],
+				navigationButtons,
+			]
+
+			// Отправляем сообщение с кнопками
+			await ctx.reply(message, {
+				parse_mode: 'HTML',
+				reply_markup: { inline_keyboard: keyboard },
+			})
+		} catch (error) {
+			console.error('Ошибка при отображении списка объявлений:', error)
+			await ctx.reply('❌ Произошла ошибка при загрузке объявлений')
+		}
+	}
+
+	// Добавляем метод для проверки возможности создания предложения
+	async canCreateOffer(ctx: Context): Promise<boolean> {
+		try {
+			const userId = ctx.from.id
+			const user = await this.prisma.user.findUnique({
+				where: { telegramId: userId.toString() },
+			})
+
+			if (!user) {
+				await ctx.reply('❌ Вы должны войти в систему для создания объявления')
+				return false
+			}
+
+			// Проверяем, является ли пользователь поставщиком
+			if (user.role !== 'SUPPLIER') {
+				await ctx.reply(
+					'❌ Только поставщики могут создавать объявления.\n\n' +
+						'Если вы хотите стать поставщиком, пожалуйста, создайте новый аккаунт с соответствующей ролью.',
+				)
+				return false
+			}
+
+			return true
+		} catch (error) {
+			console.error(
+				'Ошибка при проверке возможности создания объявления:',
+				error,
+			)
+			await ctx.reply('❌ Произошла ошибка при проверке ваших прав')
+			return false
+		}
+	}
+
+	// Добавляем метод для начала редактирования объявления
+	async startEditOffer(ctx: Context, offerId: string) {
+		try {
+			const userId = ctx.from.id
+			const user = await this.prisma.user.findUnique({
+				where: { telegramId: userId.toString() },
+			})
+
+			if (!user) {
+				await ctx.reply('❌ Пользователь не найден')
+				return
+			}
+
+			// Получаем объявление
+			const offer = await this.prisma.offer.findUnique({
+				where: { id: offerId },
+			})
+
+			if (!offer) {
+				await ctx.reply('❌ Объявление не найдено')
+				return
+			}
+
+			// Проверяем, принадлежит ли объявление текущему пользователю
+			if (offer.userId !== user.id) {
+				await ctx.reply('❌ У вас нет доступа к этому объявлению')
+				return
+			}
+
+			// Отправляем сообщение с выбором поля для редактирования
+			await ctx.reply('✏️ Выберите, что вы хотите изменить:', {
+				reply_markup: {
+					inline_keyboard: [
+						[
+							{
+								text: '📝 Название',
+								callback_data: `edit_offer_title_${offerId}`,
+							},
+							{
+								text: '📋 Описание',
+								callback_data: `edit_offer_description_${offerId}`,
+							},
+						],
+						[
+							{
+								text: '🔢 Количество',
+								callback_data: `edit_offer_quantity_${offerId}`,
+							},
+							{ text: '⚖️ Вес', callback_data: `edit_offer_weight_${offerId}` },
+						],
+						[
+							{
+								text: '🌱 Возраст',
+								callback_data: `edit_offer_age_${offerId}`,
+							},
+							{ text: '💰 Цена', callback_data: `edit_offer_price_${offerId}` },
+						],
+						[
+							{
+								text: '🌍 Локация',
+								callback_data: `edit_offer_location_${offerId}`,
+							},
+							{
+								text: '🐮 Порода',
+								callback_data: `edit_offer_breed_${offerId}`,
+							},
+						],
+						[
+							{
+								text: '« Назад к объявлению',
+								callback_data: `view_offer_${offerId}`,
+							},
+							{ text: '« Меню', callback_data: 'menu' },
+						],
+					],
+				},
+			})
+		} catch (error) {
+			console.error('Ошибка при начале редактирования объявления:', error)
+			await ctx.reply('❌ Произошла ошибка при редактировании объявления')
+		}
+	}
+
+	// Добавляем метод для подтверждения удаления объявления
+	async confirmDeleteOffer(ctx: Context, offerId: string) {
+		try {
+			const userId = ctx.from.id
+			const user = await this.prisma.user.findUnique({
+				where: { telegramId: userId.toString() },
+			})
+
+			if (!user) {
+				await ctx.reply('❌ Пользователь не найден')
+				return
+			}
+
+			// Получаем объявление
+			const offer = await this.prisma.offer.findUnique({
+				where: { id: offerId },
+			})
+
+			if (!offer) {
+				await ctx.reply('❌ Объявление не найдено')
+				return
+			}
+
+			// Проверяем, принадлежит ли объявление текущему пользователю
+			if (offer.userId !== user.id) {
+				await ctx.reply('❌ У вас нет доступа к этому объявлению')
+				return
+			}
+
+			// Удаляем изображения из S3
+			// @ts-ignore
+			if (offer.images && offer.images.length > 0) {
+				// @ts-ignore
+
+				for (const image of offer.images) {
+					if (image.key) {
+						await this.s3Service.deleteFile(image.key)
+					}
+				}
+			}
+
+			// Удаляем объявление из базы данных
+			await this.prisma.offer.delete({
+				where: { id: offerId },
+			})
+
+			// Отправляем сообщение об успешном удалении
+			await ctx.reply('✅ Объявление успешно удалено', {
+				reply_markup: {
+					inline_keyboard: [
+						[
+							{ text: '📋 Мои объявления', callback_data: 'my_ads' },
+							{ text: '« Меню', callback_data: 'menu' },
+						],
+					],
+				},
+			})
+		} catch (error) {
+			console.error('Ошибка при удалении объявления:', error)
+			await ctx.reply('❌ Произошла ошибка при удалении объявления')
+		}
+	}
+
+	// Добавляем метод для отображения списка совпадений с объявлением
+	async showOfferMatches(ctx: Context, offerId: string) {
+		try {
+			const userId = ctx.from.id
+			const user = await this.prisma.user.findUnique({
+				where: { telegramId: userId.toString() },
+			})
+
+			if (!user) {
+				await ctx.reply('❌ Пользователь не найден')
+				return
+			}
+
+			// Получаем объявление с совпадениями
+			const offer = await this.prisma.offer.findUnique({
+				where: { id: offerId },
+				include: {
+					matches: {
+						include: {
+							request: {
+								include: {
+									user: true,
+								},
+							},
+						},
+					},
+				},
+			})
+
+			if (!offer) {
+				await ctx.reply('❌ Объявление не найдено')
+				return
+			}
+
+			// Проверяем, принадлежит ли объявление текущему пользователю
+			if (offer.userId !== user.id) {
+				await ctx.reply('❌ У вас нет доступа к этому объявлению')
+				return
+			}
+
+			if (!offer.matches || offer.matches.length === 0) {
+				await ctx.reply('📭 Пока нет заявок на это объявление', {
+					reply_markup: {
+						inline_keyboard: [
+							[
+								Markup.button.callback(
+									'« Назад к объявлению',
+									`view_offer_${offerId}`,
+								),
+								Markup.button.callback('« Меню', 'menu'),
+							],
+						],
+					},
+				})
+				return
+			}
+
+			// Формируем сообщение со списком совпадений
+			let message = `📋 <b>Заявки на объявление "${offer.title}":</b>\n\n`
+
+			// Создаем кнопки для каждого совпадения
+			const matchButtons = offer.matches.map((match, index) => {
+				const request = match.request
+				const buyer = request.user
+
+				return [
+					Markup.button.callback(
+						`${index + 1}. ${request.title} - ${buyer.name || buyer.email}`,
+						`view_match_details_${match.id}`,
+					),
+				]
+			})
+
+			// Добавляем кнопки навигации
+			matchButtons.push([
+				Markup.button.callback('« Назад к объявлению', `view_offer_${offerId}`),
+				Markup.button.callback('« Меню', 'menu'),
+			])
+
+			// Отправляем сообщение с кнопками
+			await ctx.reply(message, {
+				parse_mode: 'HTML',
+				reply_markup: { inline_keyboard: matchButtons },
+			})
+		} catch (error) {
+			console.error('Ошибка при отображении списка совпадений:', error)
+			await ctx.reply('❌ Произошла ошибка при загрузке заявок')
+		}
+	}
+
+	// Добавляем метод для отображения деталей совпадения
+	async showMatchDetails(ctx: Context, matchId: string) {
+		try {
+			const userId = ctx.from.id
+			const user = await this.prisma.user.findUnique({
+				where: { telegramId: userId.toString() },
+			})
+
+			if (!user) {
+				await ctx.reply('❌ Пользователь не найден')
+				return
+			}
+
+			// Получаем совпадение с запросом и предложением
+			const match = await this.prisma.match.findUnique({
+				where: { id: parseInt(matchId) },
+				include: {
+					request: {
+						include: {
+							user: true,
+						},
+					},
+					offer: {
+						include: {
+							user: true,
+						},
+					},
+				},
+			})
+
+			if (!match) {
+				await ctx.reply('❌ Заявка не найдена')
+				return
+			}
+
+			// Проверяем, принадлежит ли объявление текущему пользователю
+			if (match.offer.userId !== user.id) {
+				await ctx.reply('❌ У вас нет доступа к этой заявке')
+				return
+			}
+
+			const request = match.request
+			const buyer = request.user
+
+			// Формируем сообщение с деталями заявки
+			let message = `🔍 <b>Детали заявки</b>\n\n`
+			message += `🐄 <b>Название:</b> ${request.title}\n`
+			message += `🔢 <b>Количество:</b> ${request.quantity} голов\n`
+			message += `⚖️ <b>Вес:</b> ${request.weight} кг\n`
+			message += `🗓️ <b>Возраст:</b> ${request.age} мес.\n`
+			message += `💰 <b>Цена:</b> ${request.price} ₽/гол\n`
+			message += `📍 <b>Локация:</b> ${request.location}\n\n`
+
+			// Добавляем информацию о покупателе
+			message += `👤 <b>Покупатель:</b> ${buyer.name || buyer.email}\n`
+			message += `📅 <b>Дата создания:</b> ${request.createdAt.toLocaleDateString()}\n\n`
+
+			// Создаем кнопки для действий с заявкой
+			const buttons = [
+				[
+					Markup.button.callback(
+						'💬 Написать сообщение',
+						`send_message_${buyer.id}`,
+					),
+					Markup.button.callback('📞 Контакты', `show_contacts_${buyer.id}`),
+				],
+				[
+					Markup.button.callback(
+						'« Назад к заявкам',
+						`view_matches_${match.offer.id}`,
+					),
+					Markup.button.callback('« Меню', 'menu'),
+				],
+			]
+
+			// Отправляем сообщение с кнопками
+			await ctx.reply(message, {
+				parse_mode: 'HTML',
+				reply_markup: { inline_keyboard: buttons },
+			})
+		} catch (error) {
+			console.error('Ошибка при отображении деталей заявки:', error)
+			await ctx.reply('❌ Произошла ошибка при отображении деталей заявки')
+		}
+	}
+
+	// Добавляем метод для запроса контактов
+	async requestContacts(ctx: Context, offerId: string) {
+		try {
+			const userId = ctx.from.id
+			const user = await this.prisma.user.findUnique({
+				where: { telegramId: userId.toString() },
+			})
+
+			if (!user) {
+				await ctx.reply('❌ Пользователь не найден')
+				return
+			}
+
+			// Получаем объявление с информацией о пользователе
+			const offer = await this.prisma.offer.findUnique({
+				where: { id: offerId },
+				include: {
+					user: true,
+				},
+			})
+
+			if (!offer) {
+				await ctx.reply('❌ Объявление не найдено')
+				return
+			}
+
+			// Проверяем, не является ли пользователь владельцем объявления
+			if (offer.userId === user.id) {
+				await ctx.reply('❌ Вы не можете запросить контакты своего объявления')
+				return
+			}
+
+			// Проверяем, существует ли уже запрос на контакты
+			const existingRequest = await this.prisma.contactRequest.findFirst({
+				where: {
+					offerId,
+					requesterId: user.id,
+				},
+			})
+
+			if (existingRequest) {
+				if (existingRequest.status === 'APPROVED') {
+					// Если запрос уже одобрен, показываем контакты
+					await this.profileService.showContacts(ctx, offer.user.id)
+				} else if (existingRequest.status === 'PENDING') {
+					await ctx.reply(
+						'⏳ Ваш запрос на получение контактов находится на рассмотрении',
+					)
+				} else {
+					await ctx.reply('❌ Ваш запрос на получение контактов был отклонен')
+				}
+				return
+			}
+
+			// Создаем новый запрос на контакты
+			await this.prisma.contactRequest.create({
+				data: {
+					offer: { connect: { id: offerId } },
+					requester: { connect: { id: user.id } },
+					status: 'PENDING',
+				},
+			})
+
+			// Отправляем уведомление владельцу объявления
+			if (offer.user.telegramId) {
+				await this.telegramClient.sendMessage(
+					offer.user.telegramId,
+					`👋 <b>Новый запрос на контакты</b>\n\n` +
+						`Пользователь ${user.name || user.email} запрашивает ваши контактные данные для объявления "${offer.title}".\n\n` +
+						`Вы можете одобрить или отклонить этот запрос в личном кабинете.`,
+					{
+						parse_mode: 'HTML',
+						reply_markup: {
+							inline_keyboard: [
+								[
+									{
+										text: '✅ Одобрить',
+										callback_data: `approve_contact_request_${existingRequest.id}`,
+									},
+									{
+										text: '❌ Отклонить',
+										callback_data: `reject_contact_request_${existingRequest.id}`,
+									},
+								],
+							],
+						},
+					},
+				)
+			}
+
+			await ctx.reply(
+				'✅ Запрос на получение контактов отправлен.\n\n' +
+					'Мы уведомим вас, когда владелец объявления ответит на ваш запрос.',
+				{
+					reply_markup: {
+						inline_keyboard: [
+							[
+								Markup.button.callback(
+									'« Назад к объявлению',
+									`view_offer_${offerId}`,
+								),
+								Markup.button.callback('« Меню', 'menu'),
+							],
+						],
+					},
+				},
+			)
+		} catch (error) {
+			console.error('Ошибка при запросе контактов:', error)
+			await ctx.reply('❌ Произошла ошибка при запросе контактов')
 		}
 	}
 }

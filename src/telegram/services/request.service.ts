@@ -1,8 +1,9 @@
 // Сервис для работы с запросами на покупку
 import { Injectable } from '@nestjs/common'
-import { Match, Purpose, Request, User } from '@prisma/client'
-import { Markup } from 'telegraf'
+import { Match, User } from '@prisma/client'
+import { Context, Markup } from 'telegraf'
 import { PrismaService } from '../../prisma.service'
+import { Purpose } from '../../types/purpose.enum'
 
 interface RequestState {
 	purpose?: Purpose
@@ -13,6 +14,9 @@ interface RequestState {
 	deadline?: Date
 	maxPrice?: number
 	location?: string
+	title?: string
+	price?: number
+	inputType?: string
 }
 
 interface MatchWithRelations extends Match {
@@ -75,8 +79,8 @@ export class TelegramRequestService {
 		const requestState = this.requestStates.get(userId)
 		if (!requestState) return false
 
-		if (!requestState.breed) {
-			requestState.breed = text
+		if (!requestState.title) {
+			requestState.title = text
 			this.requestStates.set(userId, requestState)
 			await ctx.reply('Введите количество голов:')
 			return true
@@ -187,89 +191,58 @@ export class TelegramRequestService {
 
 		if (!requestState.location) {
 			requestState.location = text
+			this.requestStates.set(userId, requestState)
+
+			// Добавляем запрос цены
+			await ctx.reply('Введите желаемую цену за голову (в рублях):')
+			return true
+		}
+
+		if (!requestState.price) {
+			const price = parseFloat(text)
+			if (isNaN(price) || price <= 0) {
+				await ctx.reply('❌ Введите корректную цену')
+				return true
+			}
+			requestState.price = price
+			this.requestStates.set(userId, requestState)
 
 			// Создаем запрос
-			const user = await this.prisma.user.findUnique({
-				where: { telegramId: userId.toString() },
-			})
-
-			const request = await this.prisma.request.create({
-				data: {
-					breed: requestState.breed,
-					quantity: requestState.quantity,
-					weight: requestState.weight,
-					age: requestState.age,
-					deadline: requestState.deadline,
-					purpose: requestState.purpose,
-					maxPrice: requestState.maxPrice,
-					location: requestState.location,
-					userId: user.id,
-				},
-			})
-
-			// Ищем подходящие предложения
-			const matches = await this.findMatches(request)
-
-			this.requestStates.delete(userId)
-
-			await ctx.reply(
-				`✅ Запрос успешно создан!
-
-🐮 Порода: ${request.breed}
-🔢 Количество: ${request.quantity} голов
-⚖️ Вес: ${request.weight} кг
-🌱 Возраст: ${request.age} мес.
-📅 Срок: ${request.deadline.toLocaleDateString()}
-🎯 Цель: ${this.getPurposeText(request.purpose)}
-💰 Макс. цена: ${request.maxPrice} руб/голову
-📍 Доставка: ${request.location}
-
-${
-	matches.length > 0
-		? `\nНайдено ${matches.length} подходящих предложений! Используйте /matches для просмотра.`
-		: '\nПока нет подходящих предложений. Мы уведомим вас при появлении.'
-}`,
-				{ parse_mode: 'HTML' },
-			)
+			await this.createRequest(ctx)
 			return true
 		}
 
 		return false
 	}
 
-	private async findMatches(request) {
-		// Логика поиска подходящих предложений
-		const matches = await this.prisma.offer.findMany({
+	async findMatches(request) {
+		// Находим подходящие предложения
+		const offers = await this.prisma.offer.findMany({
 			where: {
-				breed: request.breed,
-				quantity: { gte: request.quantity },
-				weight: {
-					gte: request.weight * 0.9,
-					lte: request.weight * 1.1,
-				},
-				price: { lte: request.maxPrice },
 				status: 'ACTIVE',
+				quantity: {
+					gte: request.quantity,
+				},
+				// Можно добавить дополнительные условия для поиска
+			},
+			include: {
+				user: true,
+				images: true,
 			},
 		})
 
-		// Создаем записи о совпадениях
-		for (const offer of matches) {
-			await this.prisma.match.create({
+		// Создаем совпадения для каждого найденного предложения
+		const matchPromises = offers.map(offer =>
+			this.prisma.match.create({
 				data: {
-					request: {
-						connect: {
-							id: request.id,
-						},
-					},
-					offer: {
-						connect: {
-							id: offer.id,
-						},
-					},
+					request: { connect: { id: request.id } },
+					offer: { connect: { id: offer.id } },
+					status: 'PENDING',
 				},
-			})
-		}
+			}),
+		)
 
+		const matches = await Promise.all(matchPromises)
 		return matches
 	}
 
@@ -287,44 +260,36 @@ ${
 		const userId = ctx.from.id
 		const user = await this.prisma.user.findUnique({
 			where: { telegramId: userId.toString() },
-			include: {
-				offers: {
-					include: {
-						matches: {
-							include: {
-								request: {
-									include: {
-										user: true,
-									},
-								},
-							},
-						},
-					},
-				},
-			},
 		})
 
-		if (!user.offers.length) {
-			await ctx.reply(
-				'❌ У вас пока нет запросов на покупку.\n\nИспользуйте команду /request для создания нового запроса.',
-				Markup.inlineKeyboard([
-					[Markup.button.callback('🔍 Создать запрос', 'create_request')],
-				]),
-			)
+		if (!user) {
+			await ctx.reply('❌ Пользователь не найден')
 			return
 		}
 
-		// Создаем кнопки для каждого запроса
-		const buttons = user.offers.map((req, index) => [
+		const requests = await this.prisma.request.findMany({
+			where: { userId: user.id },
+			include: {
+				matches: true,
+			},
+			orderBy: { createdAt: 'desc' },
+		})
+
+		if (!requests.length) {
+			await ctx.reply('📭 У вас пока нет запросов на покупку КРС', {
+				parse_mode: 'HTML',
+				...Markup.inlineKeyboard([[Markup.button.callback('« Меню', 'menu')]]),
+			})
+			return
+		}
+
+		const buttons = requests.map((req, index) => [
 			Markup.button.callback(
-				`${index + 1}. ${req.breed} (${req.matches.length} предложений)`,
+				`${index + 1}. ${req.title} (${req.matches.length} предложений)`,
 				`view_request_${req.id}`,
 			),
 		])
 
-		buttons.push([
-			Markup.button.callback('🔍 Создать новый запрос', 'create_request'),
-		])
 		buttons.push([Markup.button.callback('« Меню', 'menu')])
 
 		await ctx.reply(
@@ -354,16 +319,14 @@ ${
 		})
 
 		const requestDetails = `
-📋 <b>Детали запроса:</b>
+📋 <b>Запрос #${request.id}</b>
 
-🐮 Порода: ${request.breed}
+🐄 ${request.title}
 🔢 Количество: ${request.quantity} голов
 ⚖️ Вес: ${request.weight} кг
-🌱 Возраст: ${request.age} мес.
-📅 Срок: ${this.formatDate(request.deadline)}
-🎯 Цель: ${this.getPurposeText(request.purpose)}
-💰 Макс. цена: ${request.maxPrice} ₽/гол
-📍 Доставка: ${request.location}
+🗓️ Возраст: ${request.age} мес.
+📍 Локация: ${request.location}
+💰 Цена: ${request.price} ₽/гол
 
 📬 <b>Найденные предложения (${request.matches.length}):</b>`
 
@@ -374,7 +337,7 @@ ${
 				const offer = match.offer
 				buttons.push([
 					Markup.button.callback(
-						`${index + 1}. ${offer.breed} - ${offer.price}₽ (${
+						`${index + 1}. ${offer.title} - ${offer.price}₽ (${
 							offer.user.name
 						})`,
 						`view_offer_${offer.id}`,
@@ -410,10 +373,10 @@ ${
 		const offerDetails = `
 📦 <b>Предложение от ${offer.user.name}</b>
 
-🐮 Порода: ${offer.breed}
+🐄 ${offer.title}
 🔢 Количество: ${offer.quantity} голов
 ⚖️ Вес: ${offer.weight} кг
-🌱 Возраст: ${offer.age} мес.
+🗓️ Возраст: ${offer.age} мес.
 💰 Цена: ${offer.price} ₽/гол
 📍 Локация: ${offer.location}
 
@@ -467,7 +430,7 @@ ${
 
 	async handleIncomingRequests(ctx) {
 		const userId = ctx.from.id
-		const user = await this.prisma.user.findUnique({
+		const userWithOffers = await this.prisma.user.findUnique({
 			where: { telegramId: userId.toString() },
 			include: {
 				offers: {
@@ -486,7 +449,7 @@ ${
 			},
 		})
 
-		const activeMatches = user.offers.flatMap(offer =>
+		const activeMatches = userWithOffers.offers.flatMap(offer =>
 			offer.matches.filter(match => match.status === 'PENDING'),
 		)
 
@@ -500,7 +463,7 @@ ${
 
 		const buttons = activeMatches.map((match, index) => [
 			Markup.button.callback(
-				`${index + 1}. ${match.request.breed} от ${match.request.user.name}`,
+				`${index + 1}. ${match.request.title} от ${match.request.user.name}`,
 				`view_incoming_request_${match.request.id}`,
 			),
 		])
@@ -514,5 +477,468 @@ ${
 				...Markup.inlineKeyboard(buttons),
 			},
 		)
+	}
+
+	async handleRequestInput(ctx: Context, text: string) {
+		try {
+			const userId = ctx.from.id
+			const state = this.requestStates.get(userId)
+
+			if (!state || !state.inputType) {
+				await ctx.reply('❌ Начните создание запроса заново')
+				return
+			}
+
+			console.log('Обработка ввода для запроса:', state.inputType, text)
+
+			// Обрабатываем ввод в зависимости от текущего шага
+			switch (state.inputType) {
+				case 'title':
+					state.title = text
+					// Пропускаем шаг с description и сразу переходим к quantity
+					state.inputType = 'quantity'
+					await ctx.reply('🔢 Введите количество голов:')
+					break
+				case 'quantity':
+					const quantity = parseInt(text)
+					if (isNaN(quantity) || quantity <= 0) {
+						await ctx.reply('❌ Пожалуйста, введите корректное число')
+						return
+					}
+					state.quantity = quantity
+					state.inputType = 'weight'
+					await ctx.reply('⚖️ Введите вес (кг):')
+					break
+				case 'weight':
+					const weight = parseInt(text)
+					if (isNaN(weight) || weight <= 0) {
+						await ctx.reply('❌ Пожалуйста, введите корректное число')
+						return
+					}
+					state.weight = weight
+					state.inputType = 'age'
+					await ctx.reply('🗓️ Введите возраст (месяцев):')
+					break
+				case 'age':
+					const age = parseInt(text)
+					if (isNaN(age) || age <= 0) {
+						await ctx.reply('❌ Пожалуйста, введите корректное число')
+						return
+					}
+					state.age = age
+					state.inputType = 'price'
+					await ctx.reply('💰 Введите максимальную цену (₽):')
+					break
+				case 'price':
+					const price = parseInt(text)
+					if (isNaN(price) || price <= 0) {
+						await ctx.reply('❌ Пожалуйста, введите корректное число')
+						return
+					}
+					state.price = price
+					state.inputType = 'location'
+					await ctx.reply('📍 Введите местоположение:')
+					break
+				case 'location':
+					state.location = text
+					state.inputType = 'completed' // Помечаем, что ввод завершен
+					await this.createRequest(ctx) // Создаем запрос только один раз
+					return // Выходим из метода, чтобы не сохранять состояние снова
+				default:
+					await ctx.reply('❌ Неизвестный шаг создания запроса')
+					break
+			}
+
+			// Сохраняем обновленное состояние
+			this.requestStates.set(userId, state)
+		} catch (error) {
+			console.error('Ошибка при обработке ввода для запроса:', error)
+			await ctx.reply('❌ Произошла ошибка при создании запроса')
+		}
+	}
+
+	// Добавляем метод для инициализации состояния запроса
+	initRequestState(userId: number, state: RequestState) {
+		this.requestStates.set(userId, state)
+	}
+
+	// Добавляем метод для начала создания запроса
+	async startRequestCreation(ctx: Context) {
+		try {
+			const userId = ctx.from.id
+
+			// Инициализируем новое состояние запроса
+			const requestState: RequestState = {
+				inputType: 'title',
+			}
+
+			this.requestStates.set(userId, requestState)
+
+			await ctx.reply(
+				'📝 <b>Создание нового запроса на покупку КРС</b>\n\n' +
+					'Пожалуйста, введите название запроса:',
+				{ parse_mode: 'HTML' },
+			)
+		} catch (error) {
+			console.error('Ошибка при создании запроса:', error)
+			await ctx.reply('❌ Произошла ошибка при создании запроса')
+		}
+	}
+
+	async createRequest(ctx: Context) {
+		try {
+			const userId = ctx.from.id
+			const state = this.requestStates.get(userId)
+
+			if (!state) {
+				await ctx.reply('❌ Данные запроса не найдены')
+				return
+			}
+
+			const user = await this.prisma.user.findUnique({
+				where: { telegramId: userId.toString() },
+			})
+
+			if (!user) {
+				await ctx.reply('❌ Пользователь не найден')
+				return
+			}
+
+			console.log('Создание запроса с данными:', state)
+
+			// Создаем запрос в базе данных, исключая поле description, которого нет в модели
+			const request = await this.prisma.request.create({
+				data: {
+					title: state.title,
+					// Удаляем поле description, так как оно отсутствует в модели
+					quantity: state.quantity,
+					weight: state.weight,
+					age: state.age,
+					price: state.price,
+					location: state.location,
+					status: 'ACTIVE',
+					user: { connect: { id: user.id } },
+				},
+			})
+
+			// Очищаем состояние после создания запроса
+			this.requestStates.delete(userId)
+
+			// Находим подходящие предложения
+			const matches = await this.findMatches(request)
+
+			// Отправляем сообщение об успешном создании запроса, исключая поле description
+			await ctx.reply(
+				`✅ Запрос успешно создан!\n\n` +
+					`🐄 ${request.title}\n` +
+					// Удаляем строку с description
+					`🔢 Количество: ${request.quantity} голов\n` +
+					`⚖️ Вес: ${request.weight} кг\n` +
+					`🗓️ Возраст: ${request.age} мес.\n` +
+					`📍 Локация: ${request.location}\n` +
+					`💰 Цена: ${request.price} ₽/гол\n\n` +
+					`${
+						matches.length > 0
+							? `Найдено ${matches.length} подходящих предложений! Используйте /matches для просмотра.`
+							: 'Пока нет подходящих предложений. Мы уведомим вас при появлении.'
+					}`,
+				{
+					parse_mode: 'HTML',
+					reply_markup: {
+						inline_keyboard: [
+							[{ text: '📋 Мои запросы', callback_data: 'my_requests' }],
+							[{ text: '« Меню', callback_data: 'menu' }],
+						],
+					},
+				},
+			)
+		} catch (error) {
+			console.error('Ошибка при создании запроса:', error)
+			await ctx.reply('❌ Произошла ошибка при создании запроса')
+		}
+	}
+
+	getRequestState(userId: number): RequestState | undefined {
+		return this.requestStates.get(userId)
+	}
+
+	// Добавляем метод для отображения деталей запроса
+	async showRequestDetails(ctx: Context, requestId: number) {
+		try {
+			const userId = ctx.from.id
+			const user = await this.prisma.user.findUnique({
+				where: { telegramId: userId.toString() },
+			})
+
+			if (!user) {
+				await ctx.reply('❌ Пользователь не найден')
+				return
+			}
+
+			// Получаем запрос с совпадениями
+			const request = await this.prisma.request.findUnique({
+				where: { id: requestId },
+				include: {
+					matches: {
+						include: {
+							offer: {
+								include: {
+									user: true,
+								},
+							},
+						},
+					},
+				},
+			})
+
+			if (!request) {
+				await ctx.reply('❌ Запрос не найден')
+				return
+			}
+
+			// Проверяем, принадлежит ли запрос текущему пользователю
+			if (request.userId !== user.id) {
+				await ctx.reply('❌ У вас нет доступа к этому запросу')
+				return
+			}
+
+			// Формируем сообщение с деталями запроса
+			let message = `📋 <b>Детали запроса #${request.id}</b>\n\n`
+			message += `🐄 <b>Название:</b> ${request.title}\n`
+
+			// Проверяем наличие поля description с использованием оператора in
+			// Это позволит избежать ошибки типизации
+			if ('description' in request && request.description) {
+				message += `📝 <b>Описание:</b> ${request.description}\n`
+			}
+
+			message += `🔢 <b>Количество:</b> ${request.quantity} голов\n`
+			message += `⚖️ <b>Вес:</b> ${request.weight} кг\n`
+			message += `🗓️ <b>Возраст:</b> ${request.age} мес.\n`
+			message += `📍 <b>Локация:</b> ${request.location}\n`
+			message += `💰 <b>Цена:</b> ${request.price} ₽/гол\n`
+			message += `🔄 <b>Статус:</b> ${this.getStatusText(request.status)}\n`
+			message += `📅 <b>Создан:</b> ${request.createdAt.toLocaleDateString()}\n\n`
+
+			// Добавляем информацию о совпадениях
+			if (request.matches.length > 0) {
+				message += `🔍 <b>Найдено ${request.matches.length} подходящих предложений:</b>\n\n`
+
+				// Создаем кнопки для просмотра совпадений
+				const matchButtons = request.matches.map((match, index) => [
+					Markup.button.callback(
+						`${index + 1}. ${match.offer.title} (${match.offer.user.name})`,
+						`view_match_${match.id}`,
+					),
+				])
+
+				// Добавляем кнопки навигации
+				matchButtons.push([
+					Markup.button.callback('📋 Мои запросы', 'my_requests'),
+					Markup.button.callback('« Меню', 'menu'),
+				])
+
+				await ctx.reply(message, {
+					parse_mode: 'HTML',
+					reply_markup: {
+						inline_keyboard: matchButtons,
+					},
+				})
+			} else {
+				message += '🔍 <b>Пока нет подходящих предложений.</b>\n'
+				message += 'Мы уведомим вас, когда появятся новые предложения.'
+
+				await ctx.reply(message, {
+					parse_mode: 'HTML',
+					reply_markup: {
+						inline_keyboard: [
+							[
+								Markup.button.callback(
+									'🔄 Обновить',
+									`view_request_${request.id}`,
+								),
+								Markup.button.callback(
+									'❌ Закрыть запрос',
+									`close_request_${request.id}`,
+								),
+							],
+							[
+								Markup.button.callback('📋 Мои запросы', 'my_requests'),
+								Markup.button.callback('« Меню', 'menu'),
+							],
+						],
+					},
+				})
+			}
+		} catch (error) {
+			console.error('Ошибка при отображении деталей запроса:', error)
+			await ctx.reply('❌ Произошла ошибка при отображении запроса')
+		}
+	}
+
+	// Добавляем вспомогательный метод для получения текстового представления статуса
+	private getStatusText(status: string): string {
+		const statusTexts = {
+			ACTIVE: '✅ Активен',
+			INACTIVE: '⏸️ Приостановлен',
+			COMPLETED: '✓ Завершен',
+			CANCELLED: '❌ Отменен',
+		}
+		return statusTexts[status] || status
+	}
+
+	// Добавляем метод для отображения деталей совпадения
+	async showMatchDetails(ctx: Context, matchId: number) {
+		try {
+			const userId = ctx.from.id
+			const user = await this.prisma.user.findUnique({
+				where: { telegramId: userId.toString() },
+			})
+
+			if (!user) {
+				await ctx.reply('❌ Пользователь не найден')
+				return
+			}
+
+			// Получаем совпадение с запросом и предложением
+			const match = await this.prisma.match.findUnique({
+				where: { id: matchId },
+				include: {
+					request: true,
+					offer: {
+						include: {
+							user: true,
+							images: true,
+						},
+					},
+				},
+			})
+
+			if (!match) {
+				await ctx.reply('❌ Совпадение не найдено')
+				return
+			}
+
+			// Проверяем, принадлежит ли запрос текущему пользователю
+			if (match.request.userId !== user.id) {
+				await ctx.reply('❌ У вас нет доступа к этому совпадению')
+				return
+			}
+
+			const offer = match.offer
+			const supplier = offer.user
+
+			// Формируем сообщение с деталями предложения
+			let message = `🔍 <b>Подходящее предложение</b>\n\n`
+			message += `🐄 <b>Название:</b> ${offer.title}\n`
+			message += `🔢 <b>Количество:</b> ${offer.quantity} голов\n`
+			message += `⚖️ <b>Вес:</b> ${offer.weight} кг\n`
+			message += `🗓️ <b>Возраст:</b> ${offer.age} мес.\n`
+			message += `📍 <b>Локация:</b> ${offer.location}\n`
+			message += `💰 <b>Цена:</b> ${offer.price} ₽/${offer.priceType === 'PER_HEAD' ? 'гол' : 'кг'}\n\n`
+
+			message += `👤 <b>Поставщик:</b> ${supplier.name}\n`
+			message += `📅 <b>Дата публикации:</b> ${offer.createdAt.toLocaleDateString()}\n\n`
+
+			// Создаем кнопки для действий с предложением
+			const buttons = [
+				[
+					Markup.button.callback(
+						'📞 Запросить контакты',
+						`request_contacts_${supplier.id}`,
+					),
+					Markup.button.callback(
+						'💬 Написать сообщение',
+						`send_message_${supplier.id}`,
+					),
+				],
+				[
+					Markup.button.callback(
+						'« Назад к запросу',
+						`view_request_${match.request.id}`,
+					),
+					Markup.button.callback('« Меню', 'menu'),
+				],
+			]
+
+			// Если есть изображения, отправляем их
+			if (offer.images && offer.images.length > 0) {
+				// Отправляем первое изображение с текстом и кнопками
+				const firstImage = offer.images[0]
+				await ctx.replyWithPhoto(
+					{ url: firstImage.url },
+					{
+						caption: message,
+						parse_mode: 'HTML',
+						reply_markup: { inline_keyboard: buttons },
+					},
+				)
+
+				// Отправляем остальные изображения, если они есть
+				for (let i = 1; i < offer.images.length; i++) {
+					await ctx.replyWithPhoto({ url: offer.images[i].url })
+				}
+			} else {
+				// Если изображений нет, отправляем только текст с кнопками
+				await ctx.reply(message, {
+					parse_mode: 'HTML',
+					reply_markup: { inline_keyboard: buttons },
+				})
+			}
+		} catch (error) {
+			console.error('Ошибка при отображении деталей совпадения:', error)
+			await ctx.reply('❌ Произошла ошибка при отображении совпадения')
+		}
+	}
+
+	// Добавляем метод для закрытия запроса
+	async closeRequest(ctx: Context, requestId: number) {
+		try {
+			const userId = ctx.from.id
+			const user = await this.prisma.user.findUnique({
+				where: { telegramId: userId.toString() },
+			})
+
+			if (!user) {
+				await ctx.reply('❌ Пользователь не найден')
+				return
+			}
+
+			// Получаем запрос
+			const request = await this.prisma.request.findUnique({
+				where: { id: requestId },
+			})
+
+			if (!request) {
+				await ctx.reply('❌ Запрос не найден')
+				return
+			}
+
+			// Проверяем, принадлежит ли запрос текущему пользователю
+			if (request.userId !== user.id) {
+				await ctx.reply('❌ У вас нет доступа к этому запросу')
+				return
+			}
+
+			// Обновляем статус запроса на "COMPLETED"
+			await this.prisma.request.update({
+				where: { id: requestId },
+				data: { status: 'COMPLETED' },
+			})
+
+			await ctx.reply('✅ Запрос успешно закрыт', {
+				reply_markup: {
+					inline_keyboard: [
+						[
+							Markup.button.callback('📋 Мои запросы', 'my_requests'),
+							Markup.button.callback('« Меню', 'menu'),
+						],
+					],
+				},
+			})
+		} catch (error) {
+			console.error('Ошибка при закрытии запроса:', error)
+			await ctx.reply('❌ Произошла ошибка при закрытии запроса')
+		}
 	}
 }

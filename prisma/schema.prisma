@@ -76,8 +76,11 @@ model User {
   requests             Request[]
   offers               Offer[]
 
-  sentMessages     Message[] @relation("SentMessages")
-  receivedMessages Message[] @relation("ReceivedMessages")
+  // Связи с сообщениями
+  sentMessages     Message[]     @relation("SentMessages")
+  receivedMessages Message[]     @relation("ReceivedMessages")
+  messages         Message[]     @relation("UserMessages")
+  chatMessages     ChatMessage[]
 
   isVerified Boolean @default(false)
 
@@ -86,71 +89,74 @@ model User {
   ogrn          String? // ОГРН
   mercuryNumber String? // Номер в системе "Меркурий"
 
+  // Добавьте эти связи
+  contactRequests ContactRequest[] @relation("ContactRequester")
+  chatsAsUser1    Chat[]           @relation("ChatUser1")
+  chatsAsUser2    Chat[]           @relation("ChatUser2")
+  dealsAsBuyer    Deal[]           @relation("DealBuyer")
+  dealsAsSeller   Deal[]           @relation("DealSeller")
+
   @@map("users")
 }
 
 model Request {
-  id        Int       @id @default(autoincrement())
-  breed     String
-  quantity  Int
-  weight    Float
-  age       Int
-  deadline  DateTime
-  purpose   Purpose
-  maxPrice  Float?
-  status    String    @default("ACTIVE")
-  location  String
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
-  userId    String
-  user      User      @relation(fields: [userId], references: [id])
-  matches   Match[]
-  messages  Message[]
+  id          Int       @id @default(autoincrement())
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  title       String
+  description String? // Добавляем поле description (опциональное)
+  quantity    Int
+  weight      Int
+  age         Int
+  price       Int
+  location    String
+  status      String    @default("ACTIVE")
+  user        User      @relation(fields: [userId], references: [id])
+  userId      String
+  matches     Match[]
+  Message     Message[]
 
   @@map("requests")
 }
 
 model Offer {
-  id          String   @id @default(uuid())
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
-  title       String
-  description String
-  price       Float
-  quantity    Int
-  breed       String
-  age         Int
-  weight      Float
-  location    String
-  status      String   @default("PENDING")
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
 
-  // Связь с пользователем (поставщиком)
-  userId String
-  user   User   @relation(fields: [userId], references: [id])
+  title              String
+  description        String?
+  quantity           Int
+  weight             Int?
+  age                Int?
+  price              Float?
+  priceType          PriceType @default(PER_HEAD)
+  pricePerKg         Float?
+  pricePerHead       Float?
+  gutDiscount        Float?    @default(0) // Скидка на ливер (%)
+  location           String?
+  region             String?
+  fullAddress        String?
+  customsUnion       Boolean?  @default(false) // Таможенный союз
+  status             String    @default("ACTIVE") // ACTIVE, INACTIVE, COMPLETED
+  userId             String
+  user               User      @relation(fields: [userId], references: [id])
+  images             Image[]
+  videoUrl           String?
+  lastActualityCheck DateTime  @default(now())
 
-  // Связь с фотографиями
-  images Image[]
-
-  matches Match[]
-
+  // Новые поля для КРС
+  breed         String?
+  cattleType    CattleType?
+  purpose       CattlePurpose?
   mercuryNumber String?
   contactPerson String?
   contactPhone  String?
 
-  // Удаляем дублирующиеся поля цены
-  priceType    PriceType // За голову/за кг
-  pricePerKg   Float? // Цена за кг
-  pricePerHead Float? // Цена за голову
-  gktDiscount  Float? // Скидка на ЖКТ в процентах
-
-  cattleType   CattleType
-  purpose      CattlePurpose
-  region       String // Регион (публичный)
-  fullAddress  String // Полный адрес (только для админа)
-  customsUnion Boolean // Состоит в Реестре ТС
-  videoUrl     String? // Ссылка на видео
-
-  lastActualityCheck DateTime @default(now())
+  // Добавьте эти связи
+  contactRequests ContactRequest[]
+  deals           Deal[]
+  matches         Match[]
 
   @@map("offers")
 }
@@ -171,31 +177,60 @@ model Image {
 }
 
 model Match {
-  id        Int       @id @default(autoincrement())
+  id        Int      @id @default(autoincrement())
+  status    String   @default("PENDING") // PENDING, APPROVED, REJECTED
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
   requestId Int
-  offerId   String // Изменили тип на String, так как id в Offer - String
-  status    String    @default("PENDING") // PENDING, ACCEPTED, REJECTED
-  request   Request   @relation(fields: [requestId], references: [id])
-  offer     Offer     @relation(fields: [offerId], references: [id])
-  messages  Message[] // Сообщения по совпадению
+  request   Request @relation(fields: [requestId], references: [id])
+
+  offerId String
+  offer   Offer  @relation(fields: [offerId], references: [id])
+
+  messages Message[]
 
   @@map("matches")
 }
 
+// Добавляем модель Message для совместимости
 model Message {
-  id        Int      @id @default(autoincrement())
+  id        String   @id @default(uuid())
   content   String
-  fromUser  User     @relation("SentMessages", fields: [fromId], references: [id])
-  fromId    String // Изменили тип на String, так как id в User - String
-  toUser    User     @relation("ReceivedMessages", fields: [toId], references: [id])
-  toId      String // Изменили тип на String, так как id в User - String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Связи с пользователями
+  fromId   String
+  fromUser User    @relation("SentMessages", fields: [fromId], references: [id])
+  toId     String?
+  toUser   User?   @relation("ReceivedMessages", fields: [toId], references: [id])
+
+  // Связи с запросами и совпадениями
   requestId Int?
   request   Request? @relation(fields: [requestId], references: [id])
   matchId   Int?
   match     Match?   @relation(fields: [matchId], references: [id])
-  createdAt DateTime @default(now())
+
+  // Связь с пользователем (для обратной совместимости)
+  userId String?
+  user   User?   @relation("UserMessages", fields: [userId], references: [id])
 
   @@map("messages")
+}
+
+model ChatMessage {
+  id        String   @id @default(uuid())
+  chatId    String
+  chat      Chat     @relation(fields: [chatId], references: [id])
+  senderId  String
+  sender    User     @relation(fields: [senderId], references: [id])
+  text      String
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("chat_messages")
 }
 
 model RegistrationRequest {
@@ -213,4 +248,41 @@ model RegistrationRequest {
   userType      String
   isProcessed   Boolean  @default(false)
   password      String // Добавляем поле для хранения хешированного пароля
+}
+
+model ContactRequest {
+  id          String   @id @default(uuid())
+  offerId     String
+  offer       Offer    @relation(fields: [offerId], references: [id])
+  requesterId String
+  requester   User     @relation("ContactRequester", fields: [requesterId], references: [id])
+  status      String   @default("PENDING") // PENDING, APPROVED, REJECTED
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model Chat {
+  id        String        @id @default(uuid())
+  user1Id   String
+  user1     User          @relation("ChatUser1", fields: [user1Id], references: [id])
+  user2Id   String
+  user2     User          @relation("ChatUser2", fields: [user2Id], references: [id])
+  messages  ChatMessage[] // Изменено с Message[] на ChatMessage[]
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+}
+
+model Deal {
+  id        String   @id @default(uuid())
+  offerId   String
+  offer     Offer    @relation(fields: [offerId], references: [id])
+  buyerId   String
+  buyer     User     @relation("DealBuyer", fields: [buyerId], references: [id])
+  sellerId  String
+  seller    User     @relation("DealSeller", fields: [sellerId], references: [id])
+  status    String   @default("PENDING") // PENDING, APPROVED, REJECTED
+  price     Float
+  quantity  Int
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }

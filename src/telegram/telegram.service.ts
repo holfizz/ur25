@@ -3,6 +3,7 @@ import { Context, Markup, Telegraf } from 'telegraf'
 import { Message } from 'telegraf/typings/core/types/typegram'
 import { PrismaService } from '../prisma.service'
 import { TelegramAuthService } from './services/auth.service'
+import { TelegramMessageService } from './services/message.service'
 import { TelegramOfferService } from './services/offer.service'
 
 @Injectable()
@@ -13,6 +14,7 @@ export class TelegramService {
 		private readonly prisma: PrismaService,
 		private readonly offerService: TelegramOfferService,
 		private readonly authService: TelegramAuthService,
+		private readonly messageService: TelegramMessageService,
 	) {
 		this.bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN)
 
@@ -54,8 +56,17 @@ export class TelegramService {
 			where: { telegramId: userId.toString() },
 		})
 
+		// Получаем количество непрочитанных сообщений
+		const unreadCount = await this.messageService.getUnreadMessagesCount(
+			user.id,
+		)
+		const messagesText =
+			unreadCount > 0 ? `💬 Сообщения (${unreadCount})` : '💬 Сообщения'
+
+		// Базовые кнопки, доступные всем пользователям
 		const buttons = [
 			[{ text: '📋 Все объявления', callback_data: 'browse_offers' }],
+			[{ text: messagesText, callback_data: 'messages' }],
 		]
 
 		// Добавляем кнопки создания объявлений только для продавцов
@@ -66,10 +77,21 @@ export class TelegramService {
 			])
 		}
 
+		// Добавляем кнопки для покупателей
+		if (user.role === 'BUYER') {
+			buttons.unshift([
+				{ text: '🔍 Создать запрос', callback_data: 'create_request' },
+				{ text: '📋 Мои запросы', callback_data: 'my_requests' },
+			])
+		}
+
+		// Добавляем общие кнопки внизу
 		buttons.push([
+			{ text: '👤 Профиль', callback_data: 'profile' },
 			{ text: '❓ Помощь', callback_data: 'help' },
-			{ text: '🚪 Выйти', callback_data: 'logout' },
 		])
+
+		buttons.push([{ text: '🚪 Выйти', callback_data: 'logout' }])
 
 		await ctx.reply('Выберите нужное действие:', {
 			reply_markup: {
@@ -144,7 +166,7 @@ export class TelegramService {
 	async showMyOffers(ctx: Context) {
 		try {
 			const userId = ctx.from.id
-			const user = await this.prisma.user.findUnique({
+			const userWithOffers = await this.prisma.user.findUnique({
 				where: { telegramId: userId.toString() },
 				include: {
 					offers: {
@@ -152,14 +174,11 @@ export class TelegramService {
 							images: true,
 							matches: true,
 						},
-						orderBy: {
-							createdAt: 'desc',
-						},
 					},
 				},
 			})
 
-			if (!user.offers.length) {
+			if (!userWithOffers.offers.length) {
 				await ctx.reply(
 					'❌ У вас пока нет объявлений.\n\nИспользуйте команду /create_offer для создания нового объявления.',
 					Markup.inlineKeyboard([
@@ -169,7 +188,7 @@ export class TelegramService {
 				return
 			}
 
-			const offersList = user.offers
+			const offersList = userWithOffers.offers
 				.map(
 					(offer, index) => `
 ${index + 1}. <b>${offer.title}</b>

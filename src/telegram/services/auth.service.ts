@@ -781,4 +781,29 @@ export class TelegramAuthService {
 
 		await ctx.reply('📍 Введите адрес:')
 	}
+
+	getAuthState(userId: number) {
+		return this.loginStates.get(userId) || this.registrationStates.get(userId)
+	}
+
+	async handleAuthInput(ctx: Context, text: string) {
+		const userId = ctx.from.id
+
+		// Проверяем, находится ли пользователь в процессе входа
+		const loginState = this.loginStates.get(userId)
+		if (loginState) {
+			await this.handleLoginInput(ctx, text)
+			return
+		}
+
+		// Проверяем, находится ли пользователь в процессе регистрации
+		const registerState = this.registrationStates.get(userId)
+		if (registerState) {
+			await this.handleTextInput(ctx, text)
+			return
+		}
+
+		// Если пользователь не находится в процессе авторизации, используем стандартный обработчик
+		await this.handleTextInput(ctx, text)
+	}
 }

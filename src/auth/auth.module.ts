@@ -1,7 +1,9 @@
 import { S3Service } from '@/common/services/s3.service'
 import { OfferService } from '@/offer/offer.service'
 import { TelegramAuthService } from '@/telegram/services/auth.service'
+import { TelegramMessageService } from '@/telegram/services/message.service'
 import { TelegramOfferService } from '@/telegram/services/offer.service'
+import { TelegramProfileService } from '@/telegram/services/profile.service'
 import { TelegramClient } from '@/telegram/telegram.client'
 import { TelegramService } from '@/telegram/telegram.service'
 import { MailerModule } from '@nestjs-modules/mailer'
@@ -67,6 +69,8 @@ import { MailService } from './mail.service'
 		TelegramClient,
 		TelegramAuthService,
 		TelegramOfferService,
+		TelegramMessageService,
+		TelegramProfileService,
 	],
 })
 export class AuthModule {}
