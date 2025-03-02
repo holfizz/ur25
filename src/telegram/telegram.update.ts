@@ -1,4 +1,4 @@
-import { CattlePurpose, CattleType } from '@prisma/client'
+import { CattlePurpose, CattleType, PriceType } from '@prisma/client'
 import { Action, Ctx, On, Start, Update } from 'nestjs-telegraf'
 import { Context } from 'telegraf'
 import { CallbackQuery } from 'telegraf/typings/core/types/typegram'
@@ -23,6 +23,42 @@ export class TelegramUpdate {
 		private readonly prisma: PrismaService,
 		private readonly telegramClient: TelegramClient,
 	) {}
+
+	// Вспомогательный метод для проверки авторизации
+	private async checkAuth(ctx: Context): Promise<boolean> {
+		const userId = ctx.from.id
+		const user = await this.prisma.user.findUnique({
+			where: { telegramId: userId.toString() },
+		})
+
+		if (!user) {
+			await ctx.reply(
+				'❌ Вы не авторизованы. Пожалуйста, войдите в систему или зарегистрируйтесь.',
+				{
+					reply_markup: {
+						inline_keyboard: [
+							[
+								{ text: '🔑 Войти', callback_data: 'login' },
+								{ text: '📝 Регистрация', callback_data: 'register' },
+							],
+						],
+					},
+				},
+			)
+			return false
+		}
+
+		if (!user.isVerified) {
+			await ctx.reply(
+				'⏳ Ваша учетная запись находится на модерации.\n' +
+					'Пожалуйста, дождитесь подтверждения администратором.\n\n' +
+					'Нажмите /start для возврата в главное меню.',
+			)
+			return false
+		}
+
+		return true
+	}
 
 	@Start()
 	async start(@Ctx() ctx: Context) {
@@ -50,42 +86,146 @@ export class TelegramUpdate {
 			reply_markup: {
 				inline_keyboard: [
 					[
-						{ text: '👤 Покупатель', callback_data: 'role_buyer' },
-						{ text: '🛠️ Поставщик', callback_data: 'role_supplier' },
+						{ text: '👤 Покупатель', callback_data: 'register_buyer' },
+						{ text: '🛠️ Поставщик', callback_data: 'register_supplier' },
 					],
-					[{ text: '🚚 Перевозчик', callback_data: 'role_carrier' }],
+					[{ text: '🚚 Перевозчик', callback_data: 'register_carrier' }],
 				],
 			},
 		})
 	}
-	@Action('skip_mercury')
-	async handleSkipMercury(@Ctx() ctx: Context) {
-		await ctx.answerCbQuery()
-		const userId = ctx.from.id
-		const state = this.offerService.getOfferState(userId)
 
-		if (!state) {
-			await ctx.reply('❌ Начните создание объявления заново')
-			return
+	@Action('register_buyer')
+	async handleRegisterBuyer(@Ctx() ctx: Context) {
+		try {
+			console.log('Вызван handleRegisterBuyer')
+			await ctx.answerCbQuery()
+			await this.authService.handleRoleSelection(ctx, 'BUYER')
+		} catch (error) {
+			console.error('Ошибка при регистрации покупателя:', error)
+			await ctx.reply('❌ Произошла ошибка при регистрации')
 		}
-
-		// Пропускаем ввод номера Меркурий и переходим к загрузке фото
-		await this.offerService.handleCreateOffer(ctx)
 	}
-	@Action(/role_.*/)
-	async handleRoleSelection(@Ctx() ctx: Context) {
-		const callbackQuery = ctx.callbackQuery
-		//@ts-ignore
-		const role = callbackQuery.data.split('_')[1]
-		await this.authService.handleRoleSelection(ctx, role)
+
+	@Action('register_supplier')
+	async handleRegisterSupplier(@Ctx() ctx: Context) {
+		try {
+			await ctx.answerCbQuery()
+			await this.authService.handleRoleSelection(ctx, 'SUPPLIER')
+		} catch (error) {
+			console.error('Ошибка при регистрации поставщика:', error)
+			await ctx.reply('❌ Произошла ошибка при регистрации')
+		}
+	}
+
+	@Action('register_carrier')
+	async handleRegisterCarrier(@Ctx() ctx: Context) {
+		try {
+			await ctx.answerCbQuery()
+			await this.authService.handleRoleSelection(ctx, 'CARRIER')
+		} catch (error) {
+			console.error('Ошибка при регистрации перевозчика:', error)
+			await ctx.reply('❌ Произошла ошибка при регистрации')
+		}
+	}
+
+	@Action('skip_mercury_offer')
+	async handleSkipMercuryOffer(@Ctx() ctx: Context) {
+		try {
+			await ctx.answerCbQuery()
+			const userId = ctx.from.id
+			const state = this.offerService.getOfferState(userId)
+
+			if (!state) {
+				await ctx.reply('❌ Начните создание объявления заново')
+				return
+			}
+
+			// Пропускаем ввод номера Меркурий и переходим к загрузке фото
+			await this.offerService.handleCreateOffer(ctx)
+		} catch (error) {
+			console.error('Ошибка при пропуске номера Меркурий:', error)
+			await ctx.reply('❌ Произошла ошибка при создании объявления')
+		}
+	}
+
+	// Обработчик для пропуска Меркурия при регистрации
+	@Action('skip_mercury_reg')
+	async handleSkipMercuryReg(@Ctx() ctx: Context) {
+		try {
+			await ctx.answerCbQuery()
+			await this.authService.handleSkipMercury(ctx)
+		} catch (error) {
+			console.error('Ошибка при пропуске номера Меркурий:', error)
+			await ctx.reply('❌ Произошла ошибка при регистрации')
+		}
 	}
 
 	@Action(/user_type_.*/)
 	async handleUserTypeSelection(@Ctx() ctx: Context) {
-		const callbackQuery = ctx.callbackQuery
-		//@ts-ignore
-		const userType = callbackQuery.data.split('_')[2]
-		await this.authService.handleUserTypeSelection(ctx, userType)
+		try {
+			await ctx.answerCbQuery()
+			const callbackQuery = ctx.callbackQuery as any
+			const userType = callbackQuery.data.split('_')[2]
+
+			// Получаем состояние пользователя
+			const userId = ctx.from.id
+
+			// Сохраняем тип пользователя в состоянии регистрации
+			const state = this.authService.getRegistrationState(userId)
+			if (!state) {
+				await ctx.reply('❌ Пожалуйста, начните регистрацию заново')
+				return
+			}
+
+			state.buyerType = userType
+
+			// Для организаций запрашиваем ИНН/ОГРН
+			if (userType !== 'PRIVATE') {
+				await ctx.reply('Выберите тип идентификатора:', {
+					reply_markup: {
+						inline_keyboard: [
+							[
+								{ text: '📝 ИНН', callback_data: 'input_inn' },
+								{ text: '📋 ОГРН', callback_data: 'input_ogrn' },
+							],
+						],
+					},
+				})
+			} else {
+				// Для частных лиц сразу переходим к email
+				state.inputType = 'email'
+				this.authService.updateRegistrationState(userId, state)
+				await ctx.reply('📧 Введите ваш email:')
+			}
+		} catch (error) {
+			console.error('Ошибка при выборе типа пользователя:', error)
+			await ctx.reply('❌ Произошла ошибка при обработке запроса')
+		}
+	}
+
+	@Action('input_inn')
+	async handleInputInn(@Ctx() ctx: Context) {
+		try {
+			await ctx.answerCbQuery()
+			const userId = ctx.from.id
+			await this.authService.setInputType(ctx, 'inn')
+		} catch (error) {
+			console.error('Ошибка при выборе ввода ИНН:', error)
+			await ctx.reply('❌ Произошла ошибка при обработке запроса')
+		}
+	}
+
+	@Action('input_ogrn')
+	async handleInputOgrn(@Ctx() ctx: Context) {
+		try {
+			await ctx.answerCbQuery()
+			const userId = ctx.from.id
+			await this.authService.setInputType(ctx, 'ogrn')
+		} catch (error) {
+			console.error('Ошибка при выборе ввода ОГРН:', error)
+			await ctx.reply('❌ Произошла ошибка при обработке запроса')
+		}
 	}
 
 	@Action(/input_.*/)
@@ -97,7 +237,8 @@ export class TelegramUpdate {
 	}
 
 	@Action('create_ad')
-	async handleCreateOffer(@Ctx() ctx: Context) {
+	async handleCreateAd(@Ctx() ctx: Context) {
+		if (!(await this.checkAuth(ctx))) return
 		const userId = ctx.from.id
 		const user = await this.prisma.user.findUnique({
 			where: { telegramId: userId.toString() },
@@ -127,258 +268,257 @@ export class TelegramUpdate {
 	@On('text')
 	async handleText(@Ctx() ctx: Context) {
 		try {
+			const text = (ctx.message as any).text
 			const userId = ctx.from.id
-
-			// Проверяем, что сообщение содержит текст
-			if (!('text' in ctx.message)) {
-				return
-			}
-
-			const text = ctx.message.text
-			console.log(
-				`Получено текстовое сообщение от пользователя ${userId}: ${text}`,
-			)
-
-			// Проверяем, авторизован ли пользователь
-			const user = await this.prisma.user.findUnique({
-				where: { telegramId: userId.toString() },
-			})
-
-			if (!user) {
-				// Если пользователь не авторизован, проверяем, находится ли он в процессе авторизации
-				const authState = this.authService.getAuthState(userId)
-				if (authState) {
-					console.log(
-						`Пользователь ${userId} находится в процессе авторизации:`,
-						authState,
-					)
-					await this.authService.handleAuthInput(ctx, text)
-					return
-				}
-
-				await ctx.reply('❌ Пожалуйста, сначала авторизуйтесь.')
-				return
-			}
 
 			// Проверяем, находится ли пользователь в процессе создания объявления
 			const offerState = this.offerService.getOfferState(userId)
 			if (offerState && offerState.inputType) {
-				console.log(
-					`Пользователь ${userId} находится в процессе создания объявления:`,
-					offerState,
-				)
 				await this.offerService.handleOfferInput(ctx, text)
+				return
+			}
+
+			// Проверяем, находится ли пользователь в процессе входа
+			const loginState = this.authService.getLoginState(userId)
+			if (loginState) {
+				await this.authService.handleLoginInput(ctx, text)
+				return
+			}
+
+			// Проверяем, находится ли пользователь в процессе регистрации
+			const registrationState = this.authService.getRegistrationState(userId)
+			if (registrationState) {
+				await this.authService.handleTextInput(ctx, text)
 				return
 			}
 
 			// Проверяем, находится ли пользователь в процессе создания запроса
 			const requestState = this.requestService.getRequestState(userId)
-			if (requestState && requestState.inputType) {
-				console.log(
-					`Пользователь ${userId} находится в процессе создания запроса:`,
-					requestState,
-				)
+			if (requestState) {
 				await this.requestService.handleRequestInput(ctx, text)
 				return
 			}
 
-			// Проверяем, находится ли пользователь в процессе отправки сообщения
-			const messageState = this.messageService.getMessageState(userId)
-			if (messageState) {
-				console.log(
-					`Пользователь ${userId} находится в процессе отправки сообщения:`,
-					messageState,
-				)
-				await this.messageService.handleMessageInput(ctx, text)
-				return
-			}
-
-			// Проверяем, находится ли пользователь в процессе редактирования профиля
-			const editState = this.profileService.getEditState(userId)
-			if (editState) {
-				console.log(
-					`Пользователь ${userId} находится в процессе редактирования профиля:`,
-					editState,
-				)
-				await this.profileService.handleProfileInput(ctx, text)
-				return
-			}
-
-			// Если ни одно из условий не выполнено, отправляем меню
-			console.log(
-				`Пользователь ${userId} не находится в каком-либо процессе, отправляем меню`,
-			)
-			await this.telegramService.handleMenu(ctx)
+			// Если пользователь не в процессе входа, регистрации или создания запроса
+			await ctx.reply('❌ Пожалуйста, сначала авторизуйтесь.', {
+				reply_markup: {
+					inline_keyboard: [
+						[
+							{ text: '🔑 Войти', callback_data: 'login' },
+							{ text: '📝 Регистрация', callback_data: 'register' },
+						],
+					],
+				},
+			})
 		} catch (error) {
 			console.error('Ошибка при обработке текстового сообщения:', error)
-			await ctx.reply('❌ Произошла ошибка при обработке вашего сообщения')
+			await ctx.reply('❌ Произошла ошибка при обработке сообщения')
 		}
 	}
 
 	@On('callback_query')
-	async handleCallbackQuery(@Ctx() ctx: Context) {
-		// Используем правильное приведение типа для callbackQuery
-		const query = ctx.callbackQuery as any
-
-		// Добавляем проверку на наличие свойства data
-		if (!query || !query.data) {
-			console.error('Некорректный формат callback_query:', query)
-			return
-		}
-
-		// Добавляем логирование для отладки
-		console.log('Получен callback_query:', query.data)
-
+	async handleCallback(@Ctx() ctx: Context) {
 		try {
-			// Добавляем обработку view_offer_*
-			if (query.data.startsWith('view_offer_')) {
-				const offerId = query.data.replace('view_offer_', '')
-				console.log(`Обработка view_offer_ в handleCallbackQuery: ${offerId}`)
-				await this.offerService.handleViewOffer(ctx)
+			const callbackQuery = ctx.callbackQuery as any // временно используем any
+			const userId = ctx.from.id
+
+			if (!callbackQuery.data) return
+
+			if (callbackQuery.data.startsWith('add_comment_')) {
+				const requestId = parseInt(
+					callbackQuery.data.replace('add_comment_', ''),
+				)
+				await ctx.reply('📝 Введите ваш комментарий к запросу:')
+
+				const state = this.offerService.getOfferState(userId) || {
+					photos: [],
+					videos: [],
+				}
+
+				state.inputType = 'waiting_for_comment'
+				state.contactRequestId = requestId.toString() // конвертируем в строку
+				this.offerService.updateOfferState(userId, state)
 				return
 			}
 
-			// Если не обработано выше, используем switch
-			switch (query.data) {
+			// Обработка кнопок объявления
+			if (callbackQuery.data.startsWith('ask_ai_')) {
+				const offerId = callbackQuery.data.replace('ask_ai_', '')
+				// Сохраняем состояние с offerId
+				const aiState = {
+					offerId,
+					inputType: 'ai_question',
+					photos: [],
+					videos: [],
+				}
+				this.offerService.updateOfferState(userId, aiState)
+				await this.offerService.handleAskAI(ctx, offerId)
+				return
+			}
+
+			if (callbackQuery.data.startsWith('calculate_price_')) {
+				const offerId = callbackQuery.data.replace('calculate_price_', '')
+				await this.offerService.handleCalculatePrice(ctx, offerId)
+				return
+			}
+
+			if (callbackQuery.data.startsWith('request_contacts_')) {
+				const offerId = callbackQuery.data.replace('request_contacts_', '')
+				await this.requestService.handleRequestContacts(ctx)
+				return
+			}
+
+			if (callbackQuery.data.startsWith('view_offer_')) {
+				const offerId = callbackQuery.data.replace('view_offer_', '')
+				await this.offerService.handleViewOffer(ctx) // Убираем второй аргумент offerId
+				return
+			}
+
+			// Обработка остальных кнопок
+			switch (callbackQuery.data) {
+				case 'gut_yes':
+					await ctx.answerCbQuery()
+					const state = this.offerService.getOfferState(userId)
+					if (!state) {
+						await ctx.reply('❌ Начните создание объявления заново')
+						return
+					}
+					state.inputType = 'gkt_discount'
+					this.offerService.updateOfferState(userId, state)
+					await ctx.reply('Введите процент скидки на ЖКТ (число от 0 до 100):')
+					break
+
+				case 'gut_no':
+					await ctx.answerCbQuery()
+					const noState = this.offerService.getOfferState(userId)
+					if (!noState) {
+						await ctx.reply('❌ Начните создание объявления заново')
+						return
+					}
+					noState.gktDiscount = 0
+					noState.inputType = 'region'
+					this.offerService.updateOfferState(userId, noState)
+					await ctx.reply('📍 Введите регион:')
+					break
+
 				case 'create_request':
 					await this.handleCreateRequest(ctx)
 					break
+
 				case 'my_requests':
 					await this.handleMyRequests(ctx)
 					break
+
 				case 'edit_profile':
 					await this.handleEditProfile(ctx)
 					break
+
 				case 'edit_name':
 					await this.handleEditName(ctx)
 					break
+
 				case 'edit_phone':
 					await this.handleEditPhone(ctx)
 					break
+
 				case 'edit_address':
 					await this.handleEditAddress(ctx)
 					break
+
 				case 'offers_list':
 					await this.handleOffersList(ctx)
 					break
+
 				case 'back_to_offers_list':
 					await this.handleBackToOffersList(ctx)
 					break
+
 				case 'create_ad':
 					await this.offerService.handleCreateOffer(ctx)
 					break
+
 				case 'login':
 					await this.telegramService.handleLogin(ctx)
 					break
+
 				case 'logout':
 					await this.authService.handleLogout(ctx)
 					break
+
 				case 'messages':
 					await this.messageService.handleMessages(ctx)
 					break
+
 				case 'profile':
 					await this.profileService.showProfile(ctx)
 					break
-				case 'help':
-					await this.handleHelp(ctx)
-					break
+
 				case 'menu':
 					await this.telegramService.handleMenu(ctx)
 					break
+
 				case 'browse_offers':
 					await this.offerService.handleBrowseOffers(ctx, 1)
 					break
-				case 'create_offer':
-					await this.offerService.startOfferCreation(ctx)
-					break
-				case 'gut_yes':
-					await this.handleGutYes(ctx)
-					break
-				case 'gut_no':
-					await this.handleGutNo(ctx)
-					break
-				case 'customs_yes':
-					await this.handleCustomsYes(ctx)
-					break
-				case 'customs_no':
-					await this.handleCustomsNo(ctx)
-					break
-				case 'actual_yes_':
-					await this.handleActualityYes(ctx)
-					break
-				case 'actual_no_':
-					await this.handleActualityNo(ctx)
-					break
-				case 'cattle_type_':
-					await this.handleCattleTypeSelection(ctx)
-					break
-				case 'purpose_':
-					await this.handlePurpose(ctx)
-					break
-				case 'price_PER_HEAD':
-					await this.handlePricePerHead(ctx)
-					break
-				case 'price_PER_KG':
-					await this.handlePricePerKg(ctx)
-					break
-				case 'approve_contact_':
-					await this.handleApproveContact(ctx)
-					break
-				case 'reject_contact_':
-					await this.handleRejectContact(ctx)
-					break
-				case 'open_chat_':
-					await this.handleOpenChat(ctx)
-					break
-				case 'send_message_':
-					await this.handleSendMessage(ctx)
-					break
-				case 'propose_deal_':
-					await this.handleProposeDeal(ctx)
-					break
-				case 'reject_deal_':
-					await this.handleRejectDeal(ctx)
-					break
-				case 'approve_deal_':
-					await this.handleApproveDeal(ctx)
-					break
+
+				default:
+					console.log('Неизвестный callback:', callbackQuery.data)
 			}
 		} catch (error) {
-			console.error('Ошибка при обработке callback_query:', error)
-			await ctx.reply('❌ Произошла ошибка при обработке вашего запроса')
+			console.error('Ошибка при обработке callback:', error)
+			await ctx.reply('❌ Произошла ошибка при обработке запроса')
 		}
 	}
 
 	@On('photo')
 	async handlePhoto(@Ctx() ctx: Context) {
-		const userId = ctx.from.id
-		const offerState = this.offerService.getOfferState(userId)
+		try {
+			if (!(await this.checkAuth(ctx))) {
+				return
+			}
 
-		if (offerState) {
-			await this.offerService.handlePhotoUpload(ctx)
-			return
+			const userId = ctx.from.id
+			const state = this.offerService.getOfferState(userId)
+
+			if (state) {
+				await this.offerService.handlePhotoUpload(ctx)
+				return
+			}
+
+			await ctx.reply(
+				'Чтобы загрузить фотографию, начните создание объявления с помощью команды /create_offer',
+			)
+		} catch (error) {
+			console.error('Ошибка при обработке фотографии:', error)
+			await ctx.reply('❌ Произошла ошибка при загрузке фотографии')
 		}
-
-		// Если нет активного состояния создания объявления
-		await ctx.reply(
-			'Чтобы загрузить фотографию, начните создание объявления с помощью команды /create_offer',
-		)
 	}
 
 	@On('video')
 	async handleVideo(@Ctx() ctx: Context) {
-		const userId = ctx.from.id
-		const offerState = this.offerService.getOfferState(userId)
+		try {
+			// Проверяем авторизацию
+			if (!(await this.checkAuth(ctx))) {
+				return
+			}
 
-		if (offerState) {
-			await this.offerService.handleVideoUpload(ctx)
-			return
+			const userId = ctx.from.id
+			const offerState = this.offerService.getOfferState(userId)
+
+			if (offerState) {
+				// Используем handleVideoUpload вместо handlePhoto
+				await this.offerService.handleVideoUpload(ctx)
+				return
+			}
+
+			// Если нет активного состояния создания объявления
+			await ctx.reply(
+				'Чтобы загрузить видео, начните создание объявления с помощью команды /create_offer',
+			)
+		} catch (error) {
+			console.error('Ошибка при обработке видео:', error)
+			await ctx.reply('❌ Произошла ошибка при загрузке видео')
 		}
-
-		// Если нет активного состояния создания объявления
-		await ctx.reply(
-			'Чтобы загрузить видео, начните создание объявления с помощью команды /create_offer',
-		)
 	}
 
 	@Action('login')
@@ -402,8 +542,31 @@ export class TelegramUpdate {
 	}
 
 	@Action(/request_contacts_.*/)
-	async handleContactRequest(@Ctx() ctx: Context) {
-		await this.offerService.handleContactRequest(ctx)
+	async handleRequestContacts(@Ctx() ctx: Context) {
+		try {
+			await ctx.answerCbQuery()
+
+			// Извлекаем ID объявления из callback_data
+			//@ts-ignore
+			const offerId = ctx.callbackQuery.data.replace('request_contacts_', '')
+			const userId = ctx.from.id
+
+			// Сохраняем состояние для обработки комментария
+			const requestState = {
+				offerId,
+				inputType: 'contact_request_comment',
+				photos: [],
+				videos: [],
+			}
+			this.offerService.updateOfferState(userId, requestState)
+
+			await ctx.reply(
+				'📝 Пожалуйста, добавьте комментарий к вашему запросу на контакты (например, опишите сколько и когда вы планируете купить):',
+			)
+		} catch (error) {
+			console.error('Ошибка при запросе контактов:', error)
+			await ctx.reply('❌ Произошла ошибка при обработке запроса')
+		}
 	}
 
 	@Action('start')
@@ -450,7 +613,7 @@ export class TelegramUpdate {
 		await this.prisma.offer.update({
 			where: { id: offerId },
 			data: {
-				status: 'PAUSED',
+				status: 'ARCHIVED',
 				lastActualityCheck: new Date(),
 			},
 		})
@@ -529,8 +692,8 @@ export class TelegramUpdate {
 				reply_markup: {
 					inline_keyboard: [
 						[
-							{ text: '🐮 За голову', callback_data: 'price_PER_HEAD' },
-							{ text: '⚖️ За кг', callback_data: 'price_PER_KG' },
+							{ text: '🐮 За голову', callback_data: 'price_type_PER_HEAD' },
+							{ text: '⚖️ За кг', callback_data: 'price_type_PER_KG' },
 						],
 					],
 				},
@@ -539,85 +702,6 @@ export class TelegramUpdate {
 			console.error('Ошибка при выборе назначения:', error)
 			await ctx.reply('❌ Произошла ошибка. Попробуйте еще раз.')
 		}
-	}
-
-	@Action('price_PER_HEAD')
-	async handlePricePerHead(@Ctx() ctx: Context) {
-		try {
-			await ctx.answerCbQuery()
-			const userId = ctx.from.id
-			const state = this.offerService.getOfferState(userId)
-
-			if (!state) {
-				await ctx.reply('❌ Начните создание объявления заново')
-				return
-			}
-
-			state.priceType = 'PER_HEAD'
-			state.inputType = 'price_per_head'
-			this.offerService.updateOfferState(userId, state)
-
-			await ctx.reply('💰 Введите цену за голову (₽):')
-		} catch (error) {
-			console.error('Ошибка при выборе цены за голову:', error)
-			await ctx.reply('❌ Произошла ошибка. Попробуйте еще раз.')
-		}
-	}
-
-	@Action('price_PER_KG')
-	async handlePricePerKg(@Ctx() ctx: Context) {
-		try {
-			await ctx.answerCbQuery()
-			const userId = ctx.from.id
-			const state = this.offerService.getOfferState(userId)
-
-			if (!state) {
-				await ctx.reply('❌ Начните создание объявления заново')
-				return
-			}
-
-			state.priceType = 'PER_KG'
-			state.inputType = 'price_per_kg'
-			this.offerService.updateOfferState(userId, state)
-
-			await ctx.reply('⚖️ Введите цену за кг (₽):')
-		} catch (error) {
-			console.error('Ошибка при выборе цены за кг:', error)
-			await ctx.reply('❌ Произошла ошибка. Попробуйте еще раз.')
-		}
-	}
-
-	@Action('gut_yes')
-	async handleGutYes(@Ctx() ctx: Context) {
-		await ctx.answerCbQuery()
-		const userId = ctx.from.id
-		const state = this.offerService.getOfferState(userId)
-
-		if (!state) {
-			await ctx.reply('❌ Начните создание объявления заново')
-			return
-		}
-
-		state.inputType = 'gkt_discount'
-		this.offerService.updateOfferState(userId, state)
-		await ctx.reply('Введите процент скидки на ЖКТ (число от 0 до 100):')
-	}
-
-	@Action('gut_no')
-	async handleGutNo(@Ctx() ctx: Context) {
-		await ctx.answerCbQuery()
-		const userId = ctx.from.id
-		const state = this.offerService.getOfferState(userId)
-
-		if (!state) {
-			await ctx.reply('❌ Начните создание объявления заново')
-			return
-		}
-
-		state.gutDiscount = 0
-		state.inputType = 'region'
-		this.offerService.updateOfferState(userId, state)
-		await ctx.reply('📍 Введите регион:')
 	}
 
 	@Action('customs_yes')
@@ -658,61 +742,97 @@ export class TelegramUpdate {
 	async handleOffersList(@Ctx() ctx: Context) {
 		try {
 			await ctx.answerCbQuery()
-
-			// Получаем список активных объявлений
-			const offers = await this.prisma.offer.findMany({
-				where: { status: 'ACTIVE' },
-				orderBy: { createdAt: 'desc' },
-				take: 10, // Ограничиваем количество объявлений
+			const userId = ctx.from.id
+			const user = await this.prisma.user.findUnique({
+				where: { telegramId: userId.toString() },
 			})
 
-			if (offers.length === 0) {
-				await ctx.reply('📭 Нет активных объявлений')
+			if (!user) {
+				await ctx.reply('❌ Пользователь не найден')
 				return
 			}
 
-			// Формируем сообщение со списком объявлений
-			let message = '📋 <b>Список объявлений:</b>\n\n'
-
-			// Создаем клавиатуру с кнопками для каждого объявления
-			const keyboard = []
-
-			for (const offer of offers) {
-				// Добавляем информацию об объявлении в сообщение
-				message += `🐮 <b>${offer.title}</b>\n`
-				message += `💰 ${
-					offer.priceType === 'PER_HEAD'
-						? `${offer.pricePerHead.toLocaleString('ru-RU')} ₽/голову`
-						: `${offer.pricePerKg.toLocaleString('ru-RU')} ₽/кг`
-				}\n`
-				message += `📍 ${offer.region}\n\n`
-
-				// Добавляем кнопку для просмотра объявления
-				keyboard.push([
-					{
-						text: `${offer.title} (${
-							offer.priceType === 'PER_HEAD'
-								? `${offer.pricePerHead.toLocaleString('ru-RU')} ₽`
-								: `${offer.pricePerKg.toLocaleString('ru-RU')} ₽/кг`
-						})`,
-						callback_data: `view_offer_${offer.id}`,
-					},
-				])
-			}
-
-			// Добавляем кнопку возврата в меню
-			keyboard.push([{ text: '« Меню', callback_data: 'menu' }])
-
-			// Отправляем сообщение с кнопками
-			await ctx.reply(message, {
-				parse_mode: 'HTML',
-				reply_markup: {
-					inline_keyboard: keyboard,
+			// Получаем объявления пользователя
+			const offers = await this.prisma.offer.findMany({
+				where: {
+					userId: user.id,
+				},
+				include: {
+					images: true,
+					matches: true,
+				},
+				orderBy: {
+					createdAt: 'desc',
 				},
 			})
+
+			if (offers.length === 0) {
+				await ctx.reply('📭 У вас пока нет объявлений', {
+					reply_markup: {
+						inline_keyboard: [
+							[{ text: '📝 Создать объявление', callback_data: 'create_ad' }],
+							[{ text: '« Меню', callback_data: 'menu' }],
+						],
+					},
+				})
+				return
+			}
+
+			// Отправляем каждое объявление отдельным сообщением
+			for (const offer of offers) {
+				let message = `
+📋 <b>${offer.title}</b>
+
+🔢 Количество: ${offer.quantity} голов
+⚖️ Вес: ${offer.weight} кг
+🌱 Возраст: ${offer.age} мес.
+💰 Цена: ${offer.priceType === 'PER_HEAD' ? `${offer.pricePerHead} ₽/голову` : `${offer.pricePerKg} ₽/кг`}
+📍 Регион: ${offer.region}
+📬 Заявок: ${offer.matches.length}
+`
+
+				const buttons = [
+					[
+						{
+							text: '✏️ Редактировать',
+							callback_data: `edit_offer_${offer.id}`,
+						},
+						{ text: '❌ Удалить', callback_data: `delete_offer_${offer.id}` },
+					],
+				]
+
+				if (offer.matches.length > 0) {
+					buttons.unshift([
+						{
+							text: '👥 Просмотреть заявки',
+							callback_data: `view_matches_${offer.id}`,
+						},
+					])
+				}
+
+				buttons.push([{ text: '« Меню', callback_data: 'menu' }])
+
+				// Если есть фотографии, отправляем первую с текстом
+				if (offer.images && offer.images.length > 0) {
+					await ctx.replyWithPhoto(offer.images[0].url, {
+						caption: message,
+						parse_mode: 'HTML',
+						reply_markup: {
+							inline_keyboard: buttons,
+						},
+					})
+				} else {
+					await ctx.reply(message, {
+						parse_mode: 'HTML',
+						reply_markup: {
+							inline_keyboard: buttons,
+						},
+					})
+				}
+			}
 		} catch (error) {
-			console.error('Ошибка при получении списка объявлений:', error)
-			await ctx.reply('❌ Произошла ошибка при загрузке списка объявлений')
+			console.error('Ошибка при отображении объявлений:', error)
+			await ctx.reply('❌ Произошла ошибка при загрузке объявлений')
 		}
 	}
 
@@ -755,20 +875,16 @@ export class TelegramUpdate {
 						reply_markup: {
 							inline_keyboard: [
 								[
-									{
-										text: '📝 Создать объявление',
-										callback_data: 'create_offer',
-									},
+									{ text: '📝 Создать объявление', callback_data: 'create_ad' },
+									{ text: '📋 Мои объявления', callback_data: 'my_ads' },
 								],
-								[{ text: '📋 Мои объявления', callback_data: 'my_offers' }],
 								[
-									{
-										text: '📋 Список объявлений',
-										callback_data: 'offers_list',
-									},
+									{ text: '📋 Все запросы', callback_data: 'all_requests' },
+									{ text: messagesText, callback_data: 'messages' },
 								],
-								[{ text: messagesText, callback_data: 'messages' }],
 								[{ text: '👤 Мой профиль', callback_data: 'profile' }],
+								[{ text: '❓ Помощь', callback_data: 'help' }],
+								[{ text: '🚪 Выйти', callback_data: 'logout' }],
 							],
 						},
 					},
@@ -845,65 +961,50 @@ export class TelegramUpdate {
 			const callbackQuery = ctx.callbackQuery as CallbackQuery.DataQuery
 			const requestId = callbackQuery.data.replace('approve_contact_', '')
 
-			// Обновляем статус запроса
-			const request = await this.prisma.contactRequest.update({
+			// Получаем запрос из базы с нужными связями
+			const request = await this.prisma.contactRequest.findUnique({
 				where: { id: requestId },
-				data: { status: 'APPROVED' },
-				include: { offer: true, requester: true },
+				include: {
+					offer: true,
+					buyer: true, // Заменяем requester на buyer
+				},
 			})
 
-			// Отправляем сообщение владельцу объявления
-			await ctx.reply(
+			// Обновляем сообщение об одобрении
+			await ctx.editMessageText(
 				`✅ Вы одобрили запрос на контакты для объявления "${request.offer.title}".\n\n` +
-					`Пользователь ${request.requester.name || request.requester.email} теперь может видеть ваши контактные данные.`,
-				{
-					reply_markup: {
-						inline_keyboard: [[{ text: '« Меню', callback_data: 'menu' }]],
-					},
-				},
+					`Покупатель ${request.buyer.name || request.buyer.email} теперь может видеть контактные данные продавца.`,
+				{ parse_mode: 'HTML' },
 			)
 
-			// Уведомляем пользователя, запросившего контакты
-			const requesterTelegramId = request.requester.telegramId
-			if (requesterTelegramId) {
-				const offer = await this.prisma.offer.findUnique({
-					where: { id: request.offerId },
-					include: { user: true },
+			// Отправляем уведомление продавцу
+			const seller = await this.prisma.user.findUnique({
+				where: { id: request.sellerId },
+			})
+
+			if (seller && seller.telegramId) {
+				await this.telegramClient.sendMessage(
+					seller.telegramId,
+					`✅ Администратор одобрил запрос на контакты для вашего объявления "${request.offer.title}".\n\n` +
+						`Покупатель ${request.buyer.name} теперь может видеть ваши контактные данные.`,
+				)
+			}
+
+			// Отправляем уведомление покупателю с данными продавца
+			const buyerTelegramId = request.buyer.telegramId
+			if (buyerTelegramId) {
+				const sellerInfo = await this.prisma.user.findUnique({
+					where: { id: request.sellerId },
 				})
 
 				await this.telegramClient.sendMessage(
-					requesterTelegramId,
-					`✅ <b>Запрос на контакты одобрен!</b>\n\n` +
-						`Владелец объявления "${offer.title}" одобрил ваш запрос на контакты.\n\n` +
-						`📞 <b>Контактная информация:</b>\n` +
-						`👤 Контактное лицо: ${offer.contactPerson || offer.user.name || 'Не указано'}\n` +
-						`📱 Телефон: ${offer.contactPhone || offer.user.phone || 'Не указано'}\n` +
-						`📧 Email: ${offer.user.email || 'Не указано'}`,
-					{
-						parse_mode: 'HTML',
-						reply_markup: {
-							inline_keyboard: [
-								[
-									{
-										text: '💬 Написать сообщение',
-										callback_data: `send_message_${offer.userId}`,
-									},
-								],
-								[
-									{
-										text: '🤝 Предложить сделку',
-										callback_data: `propose_deal_${offer.id}`,
-									},
-								],
-								[
-									{
-										text: '« Назад к объявлению',
-										callback_data: `view_offer_${offer.id}`,
-									},
-								],
-							],
-						},
-					},
+					buyerTelegramId,
+					`✅ Ваш запрос на контакты для объявления "${request.offer.title}" одобрен администратором!\n\n` +
+						`<b>Контактные данные продавца:</b>\n` +
+						`Имя: ${sellerInfo.name}\n` +
+						`Телефон: ${sellerInfo.phone || 'Не указан'}\n` +
+						`Email: ${sellerInfo.email}`,
+					{ parse_mode: 'HTML' },
 				)
 			}
 		} catch (error) {
@@ -920,43 +1021,28 @@ export class TelegramUpdate {
 			const callbackQuery = ctx.callbackQuery as CallbackQuery.DataQuery
 			const requestId = callbackQuery.data.replace('reject_contact_', '')
 
-			// Обновляем статус запроса
-			const request = await this.prisma.contactRequest.update({
+			// Получаем запрос из базы с нужными связями
+			const request = await this.prisma.contactRequest.findUnique({
 				where: { id: requestId },
-				data: { status: 'REJECTED' },
-				include: { offer: true, requester: true },
+				include: {
+					offer: true,
+					buyer: true, // Заменяем requester на buyer
+				},
 			})
 
-			// Отправляем сообщение владельцу объявления
-			await ctx.reply(
+			// Обновляем сообщение об отклонении
+			await ctx.editMessageText(
 				`❌ Вы отклонили запрос на контакты для объявления "${request.offer.title}".`,
-				{
-					reply_markup: {
-						inline_keyboard: [[{ text: '« Меню', callback_data: 'menu' }]],
-					},
-				},
+				{ parse_mode: 'HTML' },
 			)
 
-			// Уведомляем пользователя, запросившего контакты
-			const requesterTelegramId = request.requester.telegramId
-			if (requesterTelegramId) {
+			// Отправляем уведомление покупателю
+			const buyerTelegramId = request.buyer.telegramId
+			if (buyerTelegramId) {
 				await this.telegramClient.sendMessage(
-					requesterTelegramId,
-					`❌ <b>Запрос на контакты отклонен</b>\n\n` +
-						`Владелец объявления "${request.offer.title}" отклонил ваш запрос на контакты.`,
-					{
-						parse_mode: 'HTML',
-						reply_markup: {
-							inline_keyboard: [
-								[
-									{
-										text: '« Назад к объявлению',
-										callback_data: `view_offer_${request.offerId}`,
-									},
-								],
-							],
-						},
-					},
+					buyerTelegramId,
+					`❌ Администратор отклонил ваш запрос на контакты для объявления "${request.offer.title}".`,
+					{ parse_mode: 'HTML' },
 				)
 			}
 		} catch (error) {
@@ -984,7 +1070,114 @@ export class TelegramUpdate {
 			await ctx.reply('❌ Произошла ошибка при открытии чата')
 		}
 	}
+	@Action('my_ads')
+	async handleMyAds(@Ctx() ctx: Context) {
+		try {
+			await ctx.answerCbQuery()
+			const userId = ctx.from.id
+			const user = await this.prisma.user.findUnique({
+				where: { telegramId: userId.toString() },
+			})
 
+			if (!user) {
+				await ctx.reply('❌ Пользователь не найден')
+				return
+			}
+
+			// Получаем объявления пользователя
+			const offers = await this.prisma.offer.findMany({
+				where: {
+					userId: user.id,
+				},
+				include: {
+					images: true,
+					matches: true,
+				},
+				orderBy: {
+					createdAt: 'desc',
+				},
+			})
+
+			if (offers.length === 0) {
+				await ctx.reply('📭 У вас пока нет объявлений', {
+					reply_markup: {
+						inline_keyboard: [
+							[{ text: '📝 Создать объявление', callback_data: 'create_ad' }],
+							[{ text: '« Меню', callback_data: 'menu' }],
+						],
+					},
+				})
+				return
+			}
+
+			// Отправляем каждое объявление отдельным сообщением
+			for (const offer of offers) {
+				let message = `
+📋 <b>${offer.title}</b>
+
+🔢 Количество: ${offer.quantity} голов
+⚖️ Вес: ${offer.weight} кг
+🌱 Возраст: ${offer.age} мес.
+💰 Цена: ${offer.priceType === 'PER_HEAD' ? `${offer.pricePerHead} ₽/голову` : `${offer.pricePerKg} ₽/кг`}
+📍 Регион: ${offer.region}
+📬 Заявок: ${offer.matches.length}
+`
+
+				const buttons = [
+					[
+						{
+							text: '👁️ Просмотреть',
+							callback_data: `view_my_offer_${offer.id}`,
+						},
+					],
+					[
+						{
+							text: '✏️ Редактировать',
+							callback_data: `edit_offer_${offer.id}`,
+						},
+						{ text: '❌ Удалить', callback_data: `delete_offer_${offer.id}` },
+					],
+				]
+
+				if (offer.matches.length > 0) {
+					buttons.unshift([
+						{
+							text: `👥 Заявки (${offer.matches.length})`,
+							callback_data: `view_matches_${offer.id}`,
+						},
+					])
+				}
+
+				buttons.push([{ text: '« Меню', callback_data: 'menu' }])
+
+				// Если есть фотографии, отправляем первую с текстом
+				if (offer.images && offer.images.length > 0) {
+					await ctx.replyWithPhoto(offer.images[0].url, {
+						caption: message,
+						parse_mode: 'HTML',
+						reply_markup: {
+							inline_keyboard: buttons,
+						},
+					})
+
+					// Отправляем остальные фотографии, если есть
+					for (let i = 1; i < offer.images.length; i++) {
+						await ctx.replyWithPhoto(offer.images[i].url)
+					}
+				} else {
+					await ctx.reply(message, {
+						parse_mode: 'HTML',
+						reply_markup: {
+							inline_keyboard: buttons,
+						},
+					})
+				}
+			}
+		} catch (error) {
+			console.error('Ошибка при отображении объявлений:', error)
+			await ctx.reply('❌ Произошла ошибка при загрузке объявлений')
+		}
+	}
 	@Action(/send_message_.*/)
 	async handleSendMessage(@Ctx() ctx: Context) {
 		try {
@@ -1439,6 +1632,7 @@ export class TelegramUpdate {
 <b>Для поставщиков:</b>
 • Создать объявление - размещение нового предложения КРС
 • Мои объявления - управление вашими предложениями
+• Все запросы - просмотр запросов покупателей
 
 <b>Общие функции:</b>
 • Сообщения - обмен сообщениями с другими пользователями
@@ -1460,23 +1654,11 @@ export class TelegramUpdate {
 	@Action('create_request')
 	async handleCreateRequest(@Ctx() ctx: Context) {
 		try {
+			console.log('Вызван handleCreateRequest')
 			await ctx.answerCbQuery()
 
-			const userId = ctx.from.id
-			const user = await this.prisma.user.findUnique({
-				where: { telegramId: userId.toString() },
-			})
-
-			if (!user) {
-				await ctx.reply('❌ Пожалуйста, сначала авторизуйтесь.')
-				return
-			}
-
-			if (user.role !== 'BUYER') {
-				await ctx.reply(
-					'❌ Создавать запросы могут только покупатели.\n\n' +
-						'Если вы хотите стать покупателем, пожалуйста, создайте новый аккаунт с соответствующей ролью.',
-				)
+			// Проверяем авторизацию
+			if (!(await this.checkAuth(ctx))) {
 				return
 			}
 
@@ -1576,6 +1758,639 @@ export class TelegramUpdate {
 		} catch (error) {
 			console.error('Ошибка при закрытии запроса:', error)
 			await ctx.reply('❌ Произошла ошибка при закрытии запроса')
+		}
+	}
+
+	@Action('all_requests')
+	async handleAllRequests(@Ctx() ctx: Context) {
+		try {
+			await ctx.answerCbQuery()
+			const userId = ctx.from.id
+			const user = await this.prisma.user.findUnique({
+				where: { telegramId: userId.toString() },
+			})
+
+			if (!user) {
+				await ctx.reply('❌ Пользователь не найден')
+				return
+			}
+
+			// Для поставщика показываем все активные запросы
+			if (user.role === 'SUPPLIER') {
+				await this.requestService.showAllRequests(ctx)
+			} else {
+				await ctx.reply('❌ Доступ запрещен')
+			}
+		} catch (error) {
+			console.error('Ошибка при отображении запросов:', error)
+			await ctx.reply('❌ Произошла ошибка при загрузке запросов')
+		}
+	}
+
+	@Action(/^offer_cattle_.*/)
+	async handleOfferCattle(@Ctx() ctx: Context) {
+		try {
+			await ctx.answerCbQuery()
+			const callbackQuery = ctx.callbackQuery as any
+			const requestId = callbackQuery.data.replace('offer_cattle_', '')
+
+			// Передаем только контекст
+			await this.requestService.handleOfferCattle(ctx)
+		} catch (error) {
+			console.error('Ошибка при предложении КРС:', error)
+			await ctx.reply('❌ Произошла ошибка при обработке запроса')
+		}
+	}
+
+	@Action(/^view_my_offer_.*/)
+	async handleViewMyOffer(@Ctx() ctx: Context) {
+		try {
+			await ctx.answerCbQuery()
+			const callbackQuery = ctx.callbackQuery as any
+			const offerId = callbackQuery.data.replace('view_my_offer_', '')
+
+			// Получаем объявление с полными данными
+			const offer = await this.prisma.offer.findUnique({
+				where: { id: offerId },
+				include: {
+					images: true,
+					matches: true,
+					user: true,
+				},
+			})
+
+			if (!offer) {
+				await ctx.reply('❌ Объявление не найдено')
+				return
+			}
+
+			// Формируем подробное сообщение об объявлении
+			let message = `
+📋 <b>${offer.title}</b>
+
+🔢 Количество: ${offer.quantity} голов
+⚖️ Вес: ${offer.weight} кг
+🌱 Возраст: ${offer.age} мес.
+💰 Цена: ${offer.priceType === 'PER_HEAD' ? `${offer.pricePerHead} ₽/голову` : `${offer.pricePerKg} ₽/кг`}
+📍 Регион: ${offer.region}
+📬 Заявок: ${offer.matches.length}
+
+${offer.description ? `📝 Описание: ${offer.description}\n` : ''}
+${offer.breed ? `🐮 Порода: ${offer.breed}\n` : ''}
+${offer.gktDiscount ? `🔻 Скидка на ЖКТ: ${offer.gktDiscount}%\n` : ''}
+${offer.customsUnion ? '✅ В реестре Таможенного союза\n' : ''}
+📅 Создано: ${offer.createdAt.toLocaleDateString('ru-RU')}
+`
+
+			// Создаем кнопки управления
+			const buttons = [
+				[
+					{
+						text: '✏️ Редактировать',
+						callback_data: `edit_offer_${offer.id}`,
+					},
+					{ text: '❌ Удалить', callback_data: `delete_offer_${offer.id}` },
+				],
+			]
+
+			// Если есть заявки, добавляем кнопку просмотра
+			if (offer.matches.length > 0) {
+				buttons.unshift([
+					{
+						text: `👥 Просмотреть заявки (${offer.matches.length})`,
+						callback_data: `view_matches_${offer.id}`,
+					},
+				])
+			}
+
+			// Добавляем навигационные кнопки
+			buttons.push([
+				{ text: '« Назад к списку', callback_data: 'my_ads' },
+				{ text: '« Меню', callback_data: 'menu' },
+			])
+
+			// Если есть фотографии, отправляем с первой фотографией
+			if (offer.images && offer.images.length > 0) {
+				await ctx.replyWithPhoto(offer.images[0].url, {
+					caption: message,
+					parse_mode: 'HTML',
+					reply_markup: {
+						inline_keyboard: buttons,
+					},
+				})
+
+				// Отправляем остальные фотографии, если есть
+				for (let i = 1; i < offer.images.length; i++) {
+					await ctx.replyWithPhoto(offer.images[i].url)
+				}
+			} else {
+				await ctx.reply(message, {
+					parse_mode: 'HTML',
+					reply_markup: {
+						inline_keyboard: buttons,
+					},
+				})
+			}
+		} catch (error) {
+			console.error('Ошибка при просмотре объявления:', error)
+			await ctx.reply('❌ Произошла ошибка при загрузке объявления')
+		}
+	}
+
+	@Action(/^view_matches_.*/)
+	async handleViewMatches(@Ctx() ctx: Context) {
+		try {
+			await ctx.answerCbQuery()
+			const callbackQuery = ctx.callbackQuery as any
+			const offerId = callbackQuery.data.replace('view_matches_', '')
+
+			// Получаем объявление со всеми заявками
+			const offer = await this.prisma.offer.findUnique({
+				where: { id: offerId },
+				include: {
+					matches: {
+						include: {
+							request: {
+								include: {
+									user: true,
+								},
+							},
+						},
+					},
+				},
+			})
+
+			if (!offer) {
+				await ctx.reply('❌ Объявление не найдено')
+				return
+			}
+
+			if (offer.matches.length === 0) {
+				await ctx.reply('📭 Нет активных заявок', {
+					reply_markup: {
+						inline_keyboard: [
+							[
+								{
+									text: '« Назад к объявлению',
+									callback_data: `view_my_offer_${offerId}`,
+								},
+							],
+							[{ text: '« Меню', callback_data: 'menu' }],
+						],
+					},
+				})
+				return
+			}
+
+			// Формируем сообщение со списком заявок
+			const message = `📋 <b>Заявки на покупку (${offer.matches.length}):</b>`
+
+			// Создаем кнопки для каждой заявки
+			const buttons = offer.matches.map(match => [
+				{
+					text: `${match.request.user.name} - ${match.request.quantity} голов, ${match.request.price}₽`,
+					callback_data: `view_match_details_${match.id}`,
+				},
+			])
+
+			// Добавляем навигационные кнопки
+			buttons.push([
+				{
+					text: '« Назад к объявлению',
+					callback_data: `view_my_offer_${offerId}`,
+				},
+			])
+			buttons.push([{ text: '« Меню', callback_data: 'menu' }])
+
+			await ctx.reply(message, {
+				parse_mode: 'HTML',
+				reply_markup: {
+					inline_keyboard: buttons,
+				},
+			})
+		} catch (error) {
+			console.error('Ошибка при просмотре заявок:', error)
+			await ctx.reply('❌ Произошла ошибка при загрузке заявок')
+		}
+	}
+
+	// Добавляем новый обработчик для просмотра деталей заявки
+	@Action(/^view_match_details_.*/)
+	async handleViewMatchDetails(@Ctx() ctx: Context) {
+		try {
+			await ctx.answerCbQuery()
+			const callbackQuery = ctx.callbackQuery as any
+			const matchId = parseInt(
+				callbackQuery.data.replace('view_match_details_', ''),
+			) // Преобразуем в число
+
+			// Получаем данные о заявке
+			const match = await this.prisma.match.findUnique({
+				where: { id: matchId }, // Теперь id будет числом
+				include: {
+					request: {
+						include: {
+							user: true,
+						},
+					},
+					offer: true,
+				},
+			})
+
+			if (!match) {
+				await ctx.reply('❌ Заявка не найдена')
+				return
+			}
+
+			const request = match.request
+			const message = `
+📋 <b>Детали заявки</b>
+
+👤 Покупатель: ${request.user.name}
+🔢 Количество: ${request.quantity} голов
+⚖️ Вес: ${request.weight} кг
+🌱 Возраст: ${request.age} мес.
+💰 Цена: ${request.price} ₽/гол
+📍 Локация: ${request.location}
+📅 Дата создания: ${request.createdAt.toLocaleDateString('ru-RU')}
+`
+
+			const buttons = [
+				[
+					{
+						text: '📞 Связаться с покупателем',
+						callback_data: `contact_buyer_${request.userId}`,
+					},
+				],
+				[
+					{
+						text: '💬 Написать сообщение',
+						callback_data: `send_message_${request.userId}`,
+					},
+				],
+				[
+					{
+						text: '« Назад к списку заявок',
+						callback_data: `view_matches_${match.offer.id}`,
+					},
+				],
+				[{ text: '« Меню', callback_data: 'menu' }],
+			]
+
+			await ctx.reply(message, {
+				parse_mode: 'HTML',
+				reply_markup: {
+					inline_keyboard: buttons,
+				},
+			})
+		} catch (error) {
+			console.error('Ошибка при просмотре деталей заявки:', error)
+			await ctx.reply('❌ Произошла ошибка при загрузке деталей заявки')
+		}
+	}
+
+	@Action(/supplier_type_.*/)
+	async handleSupplierTypeSelection(@Ctx() ctx: Context) {
+		try {
+			await ctx.answerCbQuery()
+			const callbackQuery = ctx.callbackQuery as any
+			const type = callbackQuery.data.replace('supplier_type_', '')
+			await this.authService.handleSupplierTypeSelection(ctx, type)
+		} catch (error) {
+			console.error('Ошибка при выборе типа поставщика:', error)
+			await ctx.reply('❌ Произошла ошибка при обработке запроса')
+		}
+	}
+
+	@Action('start')
+	async handleStartAction(@Ctx() ctx: Context) {
+		await this.start(ctx)
+	}
+
+	@Action(/request_purpose_.*/)
+	async handleRequestPurpose(@Ctx() ctx: Context) {
+		try {
+			await ctx.answerCbQuery()
+			const callbackQuery = ctx.callbackQuery as any
+			const purpose = callbackQuery.data.split('_')[2]
+			await this.requestService.handlePurposeSelection(ctx, purpose)
+		} catch (error) {
+			console.error('Ошибка при выборе цели:', error)
+			await ctx.reply('❌ Произошла ошибка при обработке запроса')
+		}
+	}
+
+	@Action('skip_description')
+	async handleSkipDescription(@Ctx() ctx: Context) {
+		try {
+			await ctx.answerCbQuery()
+			await this.requestService.completeRequest(ctx)
+		} catch (error) {
+			console.error('Ошибка при пропуске описания:', error)
+			await ctx.reply('❌ Произошла ошибка при обработке запроса')
+		}
+	}
+
+	@Action(/contact_seller_.*/)
+	async handleContactSeller(@Ctx() ctx: Context) {
+		try {
+			await ctx.answerCbQuery()
+			const callbackQuery = ctx.callbackQuery as any
+			const offerId = callbackQuery.data.split('_')[2]
+			await this.requestService.handleRequestContacts(ctx) // Изменено с handleContactSeller
+		} catch (error) {
+			console.error('Ошибка при запросе контакта с продавцом:', error)
+			await ctx.reply('❌ Произошла ошибка при обработке запроса')
+		}
+	}
+
+	@Action(/request_export_.*/)
+	async handleRequestExport(@Ctx() ctx: Context) {
+		try {
+			await ctx.answerCbQuery()
+			const callbackQuery = ctx.callbackQuery as any
+			const isExport = callbackQuery.data.split('_')[2] === 'yes'
+			await this.requestService.handleExportSelection(ctx, isExport)
+		} catch (error) {
+			console.error('Ошибка при выборе экспорта:', error)
+			await ctx.reply('❌ Произошла ошибка при обработке запроса')
+		}
+	}
+
+	@Action(/request_breeding_.*/)
+	async handleRequestBreeding(@Ctx() ctx: Context) {
+		try {
+			await ctx.answerCbQuery()
+			const callbackQuery = ctx.callbackQuery as any
+			const isBreeding = callbackQuery.data.split('_')[2] === 'yes'
+			await this.requestService.handleBreedingSelection(ctx, isBreeding)
+		} catch (error) {
+			console.error('Ошибка при выборе племенного разведения:', error)
+			await ctx.reply('❌ Произошла ошибка при обработке запроса')
+		}
+	}
+
+	@Action(/price_type_.*/)
+	async handlePriceTypeSelection(@Ctx() ctx: Context) {
+		try {
+			await ctx.answerCbQuery()
+
+			const userId = ctx.from.id
+			const state = this.offerService.getOfferState(userId)
+
+			// Извлекаем полное значение PER_HEAD или PER_KG
+			//@ts-ignore
+			const callbackData = ctx.callbackQuery.data
+			const priceType = callbackData.replace('price_type_', '') as PriceType
+
+			console.log('Выбран тип цены:', priceType)
+
+			if (!state) {
+				await ctx.reply('❌ Начните создание объявления заново')
+				return
+			}
+
+			if (priceType === 'PER_HEAD') {
+				state.priceType = 'PER_HEAD'
+				state.inputType = 'price_per_head'
+				this.offerService.updateOfferState(userId, state)
+				await ctx.reply('💰 Введите цену за голову (₽):')
+			} else if (priceType === 'PER_KG') {
+				state.priceType = 'PER_KG'
+				state.inputType = 'price_per_kg'
+				this.offerService.updateOfferState(userId, state)
+				await ctx.reply('⚖️ Введите цену за кг (₽):')
+			}
+		} catch (error) {
+			console.error('Ошибка при выборе типа цены:', error)
+			await ctx.reply('❌ Произошла ошибка. Попробуйте еще раз.')
+		}
+	}
+
+	@Action(/view_offer_.*/)
+	async handleViewOffer(@Ctx() ctx: Context) {
+		try {
+			await ctx.answerCbQuery()
+
+			// Извлекаем ID объявления из callback_data
+			//@ts-ignore
+			const offerId = ctx.callbackQuery.data.replace('view_offer_', '')
+
+			// Получаем объявление из базы данных со всеми связанными данными
+			const offer = await this.prisma.offer.findUnique({
+				where: { id: offerId },
+				include: {
+					images: true,
+					user: {
+						select: {
+							name: true,
+							phone: true,
+							mercuryNumber: true,
+						},
+					},
+				},
+			})
+
+			if (!offer) {
+				await ctx.reply('❌ Объявление не найдено или было удалено')
+				return
+			}
+
+			// Формируем сообщение с данными объявления
+			let statusText = ''
+			switch (offer.status) {
+				case 'APPROVED':
+					statusText = '🟢 Активно'
+					break
+				case 'PENDING':
+					statusText = '🟡 На модерации'
+					break
+				case 'ARCHIVED':
+					statusText = '⚪ Архивировано'
+					break
+				case 'REJECTED':
+					statusText = '🔴 Отклонено'
+					break
+			}
+
+			const cattleTypeText = {
+				CALVES: '🐮 Телята',
+				BULL_CALVES: '🐂 Бычки',
+				HEIFERS: '🐄 Телки',
+				BREEDING_HEIFERS: '🐄 Нетели',
+				BULLS: '🐂 Быки',
+				COWS: '🐄 Коровы',
+			}[offer.cattleType]
+
+			const purposeText = {
+				COMMERCIAL: '💼 Коммерческое',
+				BREEDING: '🧬 Племенное',
+			}[offer.purpose]
+
+			const offerMessage = `
+${statusText}
+
+📋 <b>${offer.title}</b>
+
+${cattleTypeText} - ${offer.breed || 'Порода не указана'}
+🔢 Количество: ${offer.quantity} голов
+⚖️ Вес: ${offer.weight} кг
+🌱 Возраст: ${offer.age} мес.
+🎯 Назначение: ${purposeText}
+💰 Цена: ${
+				offer.priceType === 'PER_HEAD'
+					? offer.pricePerHead > 0
+						? `${offer.pricePerHead} ₽/гол`
+						: `${offer.pricePerKg} ₽/кг`
+					: `${offer.pricePerKg} ₽/кг`
+			}
+📍 Регион: ${offer.region || 'Не указан'}
+${offer.description ? `\n📝 Описание: ${offer.description}` : ''}
+${offer.gktDiscount ? `\n🎯 Скидка ЖКТ: ${offer.gktDiscount}%` : ''}
+${offer.customsUnion ? '\n🌍 Для стран ТС' : ''}
+
+📅 Создано: ${new Date(offer.createdAt).toLocaleDateString('ru-RU')}`
+
+			// Определяем кнопки в зависимости от роли пользователя
+			const userId = ctx.from.id
+			const user = await this.prisma.user.findUnique({
+				where: { telegramId: userId.toString() },
+			})
+
+			const buttons = []
+
+			// Добавляем кнопку запроса контактов для покупателей
+			if (user && user.role === 'BUYER') {
+				buttons.push([
+					{
+						text: '📞 Запросить контакты',
+						callback_data: `request_contacts_${offerId}`,
+					},
+				])
+
+				// Добавляем кнопки AI-вопроса и расчета цены для покупателей
+				buttons.push([
+					{
+						text: '🤖 Спросить AI',
+						callback_data: `ask_ai_${offerId}`,
+					},
+					{
+						text: '🧮 Рассчитать цену',
+						callback_data: `calculate_price_${offerId}`,
+					},
+				])
+			}
+
+			// Добавляем кнопку возврата
+			buttons.push([{ text: '« Назад', callback_data: 'browse_offers' }])
+
+			// Отправляем изображения, если они есть
+			if (offer.images && offer.images.length > 0) {
+				// Отправляем первое изображение с текстом и кнопками
+				await ctx.replyWithPhoto(offer.images[0].url, {
+					caption: offerMessage,
+					parse_mode: 'HTML',
+					reply_markup: {
+						inline_keyboard: buttons,
+					},
+				})
+
+				// Отправляем остальные изображения, если их больше одного
+				for (let i = 1; i < Math.min(offer.images.length, 5); i++) {
+					await ctx.replyWithPhoto(offer.images[i].url)
+				}
+			} else {
+				// Если нет изображений, отправляем только текст
+				await ctx.reply(offerMessage, {
+					parse_mode: 'HTML',
+					reply_markup: {
+						inline_keyboard: buttons,
+					},
+				})
+			}
+		} catch (error) {
+			console.error('Ошибка при просмотре объявления:', error)
+			await ctx.reply('❌ Произошла ошибка при загрузке объявления')
+		}
+	}
+
+	// Добавим обработчик для запроса к AI
+	@Action(/ask_ai_.*/)
+	async handleAskAI(@Ctx() ctx: Context) {
+		try {
+			await ctx.answerCbQuery()
+
+			// Извлекаем ID объявления из callback_data
+			//@ts-ignore
+			const offerId = ctx.callbackQuery.data.replace('ask_ai_', '')
+			const userId = ctx.from.id
+
+			// Сохраняем состояние для обработки вопроса к AI
+			const aiState = {
+				offerId,
+				inputType: 'ai_question',
+				photos: [], // Добавляем пустые массивы
+				videos: [],
+			}
+			this.offerService.updateOfferState(userId, aiState)
+
+			await ctx.reply(
+				'🤖 Задайте вопрос об этом объявлении, и AI ответит на него:',
+			)
+		} catch (error) {
+			console.error('Ошибка при запросе к AI:', error)
+			await ctx.reply('❌ Произошла ошибка при обработке запроса')
+		}
+	}
+
+	// Добавим обработчик для расчета цены
+	@Action(/calculate_price_.*/)
+	async handleCalculatePrice(@Ctx() ctx: Context) {
+		try {
+			await ctx.answerCbQuery()
+
+			// Извлекаем ID объявления из callback_data
+			//@ts-ignore
+			const offerId = ctx.callbackQuery.data.replace('calculate_price_', '')
+
+			// Получаем объявление из базы данных
+			const offer = await this.prisma.offer.findUnique({
+				where: { id: offerId },
+			})
+
+			if (!offer) {
+				await ctx.reply('❌ Объявление не найдено или было удалено')
+				return
+			}
+
+			const userId = ctx.from.id
+
+			// Сохраняем состояние для расчета цены
+			const calculateState = {
+				offerId,
+				inputType: 'calculate_quantity',
+				priceType: offer.priceType,
+				pricePerHead: offer.pricePerHead,
+				pricePerKg: offer.pricePerKg,
+				photos: [], // Добавляем пустые массивы
+				videos: [],
+			}
+
+			this.offerService.updateOfferState(userId, calculateState)
+
+			// Запрашиваем количество в зависимости от типа цены
+			if (offer.priceType === 'PER_HEAD') {
+				await ctx.reply(
+					'🔢 Введите количество голов, которое вы хотите приобрести:',
+				)
+			} else {
+				await ctx.reply(
+					'⚖️ Введите количество килограммов, которое вы хотите приобрести:',
+				)
+			}
+		} catch (error) {
+			console.error('Ошибка при расчете цены:', error)
+			await ctx.reply('❌ Произошла ошибка при обработке запроса')
 		}
 	}
 }

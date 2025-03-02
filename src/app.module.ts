@@ -4,6 +4,7 @@ import { AuthModule } from './auth/auth.module'
 import { JwtStrategy } from './auth/jwt.strategy'
 import { S3Service } from './common/services/s3.service'
 import { PrismaService } from './prisma.service'
+import { CozeService } from './services/coze.service'
 import { TelegramModule } from './telegram/telegram.module'
 import { UserModule } from './user/user.module'
 
@@ -25,6 +26,7 @@ import { UserModule } from './user/user.module'
 			inject: [ConfigService],
 		},
 		JwtStrategy,
+		CozeService,
 	],
 })
 export class AppModule {}

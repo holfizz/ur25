@@ -102,7 +102,7 @@ export class OfferService {
 			const offer = await this.prisma.offer.update({
 				where: { id: offerId },
 				data: {
-					status: 'ACTIVE',
+					status: 'APPROVED',
 				},
 			})
 

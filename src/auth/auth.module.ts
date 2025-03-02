@@ -1,5 +1,6 @@
 import { S3Service } from '@/common/services/s3.service'
 import { OfferService } from '@/offer/offer.service'
+import { CozeService } from '@/services/coze.service'
 import { TelegramAuthService } from '@/telegram/services/auth.service'
 import { TelegramMessageService } from '@/telegram/services/message.service'
 import { TelegramOfferService } from '@/telegram/services/offer.service'
@@ -20,7 +21,6 @@ import { AuthController } from './auth.controller'
 import { AuthService } from './auth.service'
 import { JwtStrategy } from './jwt.strategy'
 import { MailService } from './mail.service'
-
 @Module({
 	imports: [
 		ConfigModule,
@@ -71,6 +71,7 @@ import { MailService } from './mail.service'
 		TelegramOfferService,
 		TelegramMessageService,
 		TelegramProfileService,
+		CozeService,
 	],
 })
 export class AuthModule {}

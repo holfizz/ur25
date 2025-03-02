@@ -56,6 +56,38 @@ export class TelegramService {
 			where: { telegramId: userId.toString() },
 		})
 
+		if (!user) {
+			await ctx.reply(
+				'❌ Вы не авторизованы. Пожалуйста, войдите в систему или зарегистрируйтесь.',
+				{
+					reply_markup: {
+						inline_keyboard: [
+							[
+								{ text: '🔑 Войти', callback_data: 'login' },
+								{ text: '📝 Регистрация', callback_data: 'register' },
+							],
+						],
+					},
+				},
+			)
+			return
+		}
+
+		if (!user.isVerified) {
+			await ctx.reply(
+				'⏳ Ваша учетная запись находится на модерации.\n' +
+					'Пожалуйста, дождитесь подтверждения администратором.',
+				{
+					reply_markup: {
+						inline_keyboard: [
+							[{ text: '« На главную', callback_data: 'start' }],
+						],
+					},
+				},
+			)
+			return
+		}
+
 		// Получаем количество непрочитанных сообщений
 		const unreadCount = await this.messageService.getUnreadMessagesCount(
 			user.id,
@@ -238,7 +270,7 @@ ${
 			await this.authService.handleRoleSelection(ctx, role)
 		} else if (callbackData.startsWith('type_')) {
 			const userType = callbackData.split('_')[1]
-			await this.authService.handleUserTypeSelection(ctx, userType)
+			await this.authService.handleSupplierTypeSelection(ctx, userType)
 		} else if (callbackData === 'skip_mercury') {
 			await this.authService.handleSkipMercury(ctx)
 		}
@@ -252,5 +284,11 @@ ${
 		await ctx.reply(
 			'📧 Введите ваш email для входа:\n\n📝 Пример: example@mail.com',
 		)
+	}
+
+	async handleUserType(ctx: Context) {
+		const callbackQuery = ctx.callbackQuery as any
+		const userType = callbackQuery.data.split('_')[2]
+		await this.authService.handleUserTypeSelection(ctx, userType)
 	}
 }

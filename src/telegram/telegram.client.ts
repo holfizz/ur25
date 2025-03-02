@@ -1,21 +1,30 @@
 import { Injectable } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import { Context, Telegraf } from 'telegraf'
+import { Message } from 'telegraf/typings/core/types/typegram'
 
 @Injectable()
 export class TelegramClient {
-	private bot: Telegraf
+	private bot: Telegraf<Context>
 
 	constructor(private configService: ConfigService) {
 		this.bot = new Telegraf(this.configService.get('TELEGRAM_BOT_TOKEN'))
 	}
 
-	async sendMessage(chatId: string, message: string, extra?: any) {
-		try {
-			await this.bot.telegram.sendMessage(chatId, message, extra)
-		} catch (error) {
-			console.error('Error sending telegram message:', error)
-		}
+	async sendMessage(
+		chatId: string,
+		text: string,
+		options?: any,
+	): Promise<Message.TextMessage> {
+		return this.bot.telegram.sendMessage(chatId, text, options)
+	}
+
+	async sendPhoto(
+		chatId: string,
+		photo: string,
+		options?: any,
+	): Promise<Message.PhotoMessage> {
+		return this.bot.telegram.sendPhoto(chatId, photo, options)
 	}
 
 	async handleMenu(ctx: Context) {

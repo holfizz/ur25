@@ -4,7 +4,6 @@ import { MailService } from '../auth/mail.service'
 import { ActualityCheckTemplate } from '../auth/templates/actuality-check.template'
 import { PrismaService } from '../prisma.service'
 import { TelegramClient } from '../telegram/telegram.client'
-
 @Injectable()
 export class NotificationService {
 	constructor(
@@ -21,7 +20,7 @@ export class NotificationService {
 		// Получаем все активные объявления, которые не проверялись более 10 дней
 		const offers = await this.prisma.offer.findMany({
 			where: {
-				status: 'ACTIVE',
+				status: 'APPROVED',
 				lastActualityCheck: {
 					lt: tenDaysAgo,
 				},

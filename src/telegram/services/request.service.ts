@@ -1,22 +1,39 @@
 // Сервис для работы с запросами на покупку
 import { Injectable } from '@nestjs/common'
-import { Match, User } from '@prisma/client'
+import { CattleType, Match, User } from '@prisma/client'
+import { Action, Ctx } from 'nestjs-telegraf'
 import { Context, Markup } from 'telegraf'
 import { PrismaService } from '../../prisma.service'
-import { Purpose } from '../../types/purpose.enum'
+import { TelegramClient } from '../telegram.client'
+import { TelegramOfferService } from './offer.service'
+
+// Определяем локальный enum Purpose, если его нет в @prisma/client
+export enum Purpose {
+	MEAT = 'MEAT',
+	BREEDING = 'BREEDING',
+	DAIRY = 'DAIRY',
+	FATTENING = 'FATTENING',
+}
 
 interface RequestState {
 	purpose?: Purpose
-	breed?: string
-	quantity?: number
-	weight?: number
-	age?: number
-	deadline?: Date
-	maxPrice?: number
-	location?: string
+	breed?: string // Порода
+	quantity?: number // Количество голов
+	weight?: number // Вес
+	age?: number // Возраст
+	deadline?: string // Сроки (изменяем тип с Date на string)
+	maxPrice?: number // Максимальная цена
+	location?: string // Местоположение фермы
+	region?: string // Регион покупки
 	title?: string
 	price?: number
 	inputType?: string
+	cattleType?: CattleType
+	description?: string
+	ageGroup?: string
+	userId?: string
+	isExport?: boolean // Для экспорта
+	isBreeding?: boolean // Для племенного разведения
 }
 
 interface MatchWithRelations extends Match {
@@ -29,7 +46,34 @@ interface MatchWithRelations extends Match {
 export class TelegramRequestService {
 	private requestStates: Map<number, RequestState> = new Map()
 
-	constructor(private prisma: PrismaService) {}
+	constructor(
+		private prisma: PrismaService,
+		private telegramClient: TelegramClient,
+		private offerService: TelegramOfferService,
+	) {}
+
+	// Переносим функции внутрь класса как приватные методы
+	private translateCattleType(type: string): string {
+		const translations = {
+			COWS: 'Коровы',
+			BULLS: 'Быки',
+			HEIFERS: 'Телки',
+			BREEDING_HEIFERS: 'Нетели',
+			CALVES: 'Телята',
+			BULL_CALVES: 'Бычки',
+		}
+		return translations[type] || type
+	}
+
+	private translatePurpose(purpose: string): string {
+		const translations = {
+			MEAT: 'на мясо',
+			BREEDING: 'на разведение',
+			DAIRY: 'на молочное производство',
+			FATTENING: 'на откорм',
+		}
+		return translations[purpose] || purpose
+	}
 
 	async handleRequest(ctx) {
 		const userId = ctx.from.id
@@ -147,7 +191,7 @@ export class TelegramRequestService {
 				maxDate.setMonth(maxDate.getMonth() + 6)
 				if (date > maxDate) throw new Error('Too far')
 
-				requestState.deadline = date
+				requestState.deadline = date.toISOString()
 				this.requestStates.set(userId, requestState)
 				await ctx.reply('Введите максимальную цену за голову (в рублях):')
 				return true
@@ -219,7 +263,7 @@ export class TelegramRequestService {
 		// Находим подходящие предложения
 		const offers = await this.prisma.offer.findMany({
 			where: {
-				status: 'ACTIVE',
+				status: 'APPROVED' as const,
 				quantity: {
 					gte: request.quantity,
 				},
@@ -267,38 +311,70 @@ export class TelegramRequestService {
 			return
 		}
 
+		// Определяем заголовок в зависимости от роли пользователя
+		const title = user.role === 'BUYER' ? 'Мои запросы' : 'Запросы покупателей'
+
 		const requests = await this.prisma.request.findMany({
-			where: { userId: user.id },
+			where: user.role === 'BUYER' ? { userId: user.id } : { status: 'ACTIVE' },
 			include: {
 				matches: true,
+				user: true,
 			},
 			orderBy: { createdAt: 'desc' },
 		})
 
 		if (!requests.length) {
-			await ctx.reply('📭 У вас пока нет запросов на покупку КРС', {
+			const emptyMessage =
+				user.role === 'BUYER'
+					? '📭 У вас пока нет запросов на покупку КРС'
+					: '📭 Активных запросов от покупателей пока нет'
+
+			await ctx.reply(emptyMessage, {
 				parse_mode: 'HTML',
 				...Markup.inlineKeyboard([[Markup.button.callback('« Меню', 'menu')]]),
 			})
 			return
 		}
 
-		const buttons = requests.map((req, index) => [
-			Markup.button.callback(
-				`${index + 1}. ${req.title} (${req.matches.length} предложений)`,
-				`view_request_${req.id}`,
-			),
-		])
+		// Отправляем каждый запрос отдельным сообщением
+		for (const request of requests) {
+			const message = `
+📋 <b>${request.title}</b>
 
-		buttons.push([Markup.button.callback('« Меню', 'menu')])
+${user.role === 'SUPPLIER' ? `👤 Покупатель: ${request.user.name}\n` : ''}
+🔢 Количество: ${request.quantity} голов
+⚖️ Вес: ${request.weight} кг
+🗓️ Возраст: ${request.age} мес.
+📍 Локация: ${request.location}
+💰 Цена: ${request.price} ₽/гол
+📬 Найдено предложений: ${request.matches.length}
+`
 
-		await ctx.reply(
-			'📋 <b>Ваши запросы:</b>\n\nВыберите запрос для просмотра деталей:',
-			{
+			const buttons = []
+
+			if (user.role === 'BUYER') {
+				buttons.push([
+					Markup.button.callback(
+						'👁️ Посмотреть детали',
+						`view_request_${request.id}`,
+					),
+				])
+			} else {
+				buttons.push([
+					Markup.button.callback(
+						'📞 Связаться с покупателем',
+						`contact_buyer_${request.userId}`,
+					),
+				])
+			}
+
+			buttons.push([Markup.button.callback('« Меню', 'menu')])
+
+			await ctx.reply(message, {
 				parse_mode: 'HTML',
 				...Markup.inlineKeyboard(buttons),
-			},
-		)
+			})
+		}
 	}
 
 	async handleViewRequest(ctx) {
@@ -480,81 +556,150 @@ export class TelegramRequestService {
 	}
 
 	async handleRequestInput(ctx: Context, text: string) {
-		try {
-			const userId = ctx.from.id
-			const state = this.requestStates.get(userId)
+		const userId = ctx.from.id
+		const state = this.requestStates.get(userId)
 
-			if (!state || !state.inputType) {
-				await ctx.reply('❌ Начните создание запроса заново')
+		if (!state) {
+			await ctx.reply('❌ Пожалуйста, начните создание запроса заново')
+			return
+		}
+
+		// Обработка ввода региона
+		if (state.inputType === 'region') {
+			if (text.length < 3) {
+				await ctx.reply(
+					'❌ Пожалуйста, введите корректное название региона (минимум 3 символа)',
+				)
 				return
 			}
 
-			console.log('Обработка ввода для запроса:', state.inputType, text)
+			state.region = text
+			state.inputType = 'location' // Меняем на запрос местоположения вместо породы
+			this.requestStates.set(userId, state)
+			await ctx.reply('📍 Введите место доставки:')
+			return
+		}
 
-			// Обрабатываем ввод в зависимости от текущего шага
-			switch (state.inputType) {
-				case 'title':
-					state.title = text
-					// Пропускаем шаг с description и сразу переходим к quantity
-					state.inputType = 'quantity'
-					await ctx.reply('🔢 Введите количество голов:')
-					break
-				case 'quantity':
-					const quantity = parseInt(text)
-					if (isNaN(quantity) || quantity <= 0) {
-						await ctx.reply('❌ Пожалуйста, введите корректное число')
-						return
-					}
-					state.quantity = quantity
-					state.inputType = 'weight'
-					await ctx.reply('⚖️ Введите вес (кг):')
-					break
-				case 'weight':
-					const weight = parseInt(text)
-					if (isNaN(weight) || weight <= 0) {
-						await ctx.reply('❌ Пожалуйста, введите корректное число')
-						return
-					}
-					state.weight = weight
-					state.inputType = 'age'
-					await ctx.reply('🗓️ Введите возраст (месяцев):')
-					break
-				case 'age':
-					const age = parseInt(text)
-					if (isNaN(age) || age <= 0) {
-						await ctx.reply('❌ Пожалуйста, введите корректное число')
-						return
-					}
-					state.age = age
-					state.inputType = 'price'
-					await ctx.reply('💰 Введите максимальную цену (₽):')
-					break
-				case 'price':
-					const price = parseInt(text)
-					if (isNaN(price) || price <= 0) {
-						await ctx.reply('❌ Пожалуйста, введите корректное число')
-						return
-					}
-					state.price = price
-					state.inputType = 'location'
-					await ctx.reply('📍 Введите местоположение:')
-					break
-				case 'location':
-					state.location = text
-					state.inputType = 'completed' // Помечаем, что ввод завершен
-					await this.createRequest(ctx) // Создаем запрос только один раз
-					return // Выходим из метода, чтобы не сохранять состояние снова
-				default:
-					await ctx.reply('❌ Неизвестный шаг создания запроса')
-					break
+		// Обработка ввода местоположения
+		if (state.inputType === 'location') {
+			if (text.length < 3) {
+				await ctx.reply(
+					'❌ Пожалуйста, введите корректное местоположение (минимум 3 символа)',
+				)
+				return
 			}
 
-			// Сохраняем обновленное состояние
+			state.location = text
+			state.inputType = 'breed' // После местоположения переходим к породе
 			this.requestStates.set(userId, state)
-		} catch (error) {
-			console.error('Ошибка при обработке ввода для запроса:', error)
-			await ctx.reply('❌ Произошла ошибка при создании запроса')
+			await ctx.reply('🐮 Введите породу КРС:')
+			return
 		}
+
+		// Обработка ввода породы
+		if (state.inputType === 'breed') {
+			if (text.length < 2) {
+				await ctx.reply(
+					'❌ Пожалуйста, введите корректное название породы (минимум 2 символа)',
+				)
+				return
+			}
+
+			state.breed = text
+			state.inputType = 'quantity'
+			this.requestStates.set(userId, state)
+			await ctx.reply('📊 Введите необходимое количество голов:')
+			return
+		}
+
+		// Обработка ввода количества
+		if (state.inputType === 'quantity') {
+			const quantity = parseInt(text)
+			if (isNaN(quantity) || quantity <= 0) {
+				await ctx.reply(
+					'❌ Пожалуйста, введите корректное количество (целое положительное число)',
+				)
+				return
+			}
+
+			state.quantity = quantity
+			state.inputType = 'weight'
+			this.requestStates.set(userId, state)
+			await ctx.reply('⚖️ Введите желаемый вес (в кг):')
+			return
+		}
+
+		// Обработка ввода веса
+		if (state.inputType === 'weight') {
+			const weight = parseInt(text)
+			if (isNaN(weight) || weight <= 0) {
+				await ctx.reply(
+					'❌ Пожалуйста, введите корректный вес (целое положительное число)',
+				)
+				return
+			}
+
+			state.weight = weight
+			state.inputType = 'age' // Добавляем ввод возраста
+			this.requestStates.set(userId, state)
+			await ctx.reply('🔢 Введите возраст КРС (в месяцах):')
+			return
+		}
+
+		// Обработка ввода возраста
+		if (state.inputType === 'age') {
+			const age = parseInt(text)
+			if (isNaN(age) || age <= 0) {
+				await ctx.reply(
+					'❌ Пожалуйста, введите корректный возраст (целое положительное число)',
+				)
+				return
+			}
+
+			state.age = age
+			state.inputType = 'deadline' // Добавляем ввод сроков
+			this.requestStates.set(userId, state)
+			await ctx.reply(
+				'📅 Введите желаемые сроки поставки (например, "до 15.06.2023"):',
+			)
+			return
+		}
+
+		// Обработка ввода сроков
+		if (state.inputType === 'deadline') {
+			state.deadline = text
+			state.inputType = 'price'
+			this.requestStates.set(userId, state)
+			await ctx.reply('💰 Введите желаемую цену (в рублях):')
+			return
+		}
+
+		// Обработка ввода цены
+		if (state.inputType === 'price') {
+			const price = parseFloat(text)
+			if (isNaN(price) || price <= 0) {
+				await ctx.reply('❌ Введите корректную цену')
+				return true
+			}
+			state.price = price
+			this.requestStates.set(userId, state)
+
+			// Создаем запрос
+			await this.createRequest(ctx)
+			return true
+		}
+
+		// Обработка ввода описания
+		if (state.inputType === 'description') {
+			state.description = text
+			this.requestStates.set(userId, state)
+
+			// Создаем запрос
+			await this.createRequest(ctx)
+			return true
+		}
+
+		return false
 	}
 
 	// Добавляем метод для инициализации состояния запроса
@@ -562,22 +707,52 @@ export class TelegramRequestService {
 		this.requestStates.set(userId, state)
 	}
 
-	// Добавляем метод для начала создания запроса
+	// Метод для начала создания запроса
 	async startRequestCreation(ctx: Context) {
 		try {
 			const userId = ctx.from.id
 
 			// Инициализируем новое состояние запроса
 			const requestState: RequestState = {
-				inputType: 'title',
+				inputType: 'cattle_type',
 			}
 
 			this.requestStates.set(userId, requestState)
 
+			console.log('Создаем кнопки для выбора типа КРС')
+
+			const keyboard = [
+				[
+					{ text: '🐄 Коровы', callback_data: 'request_cattle_COWS' },
+					{ text: '🐂 Быки', callback_data: 'request_cattle_BULLS' },
+				],
+				[
+					{ text: '🐮 Телки', callback_data: 'request_cattle_HEIFERS' },
+					{
+						text: '🐄 Нетели',
+						callback_data: 'request_cattle_BREEDING_HEIFERS',
+					},
+				],
+				[
+					{ text: '🐮 Телята', callback_data: 'request_cattle_CALVES' },
+					{
+						text: '🐂 Бычки',
+						callback_data: 'request_cattle_BULL_CALVES',
+					},
+				],
+			]
+
+			console.log('Кнопки:', JSON.stringify(keyboard))
+
 			await ctx.reply(
 				'📝 <b>Создание нового запроса на покупку КРС</b>\n\n' +
-					'Пожалуйста, введите название запроса:',
-				{ parse_mode: 'HTML' },
+					'Пожалуйста, выберите тип КРС:',
+				{
+					parse_mode: 'HTML',
+					reply_markup: {
+						inline_keyboard: keyboard,
+					},
+				},
 			)
 		} catch (error) {
 			console.error('Ошибка при создании запроса:', error)
@@ -595,6 +770,22 @@ export class TelegramRequestService {
 				return
 			}
 
+			// Проверяем наличие обязательных полей
+			if (!state.region || !state.location) {
+				await ctx.reply('❌ Необходимо указать регион и местоположение')
+
+				if (!state.region) {
+					state.inputType = 'region'
+					this.requestStates.set(userId, state)
+					await ctx.reply('🌍 Введите регион покупки:')
+				} else if (!state.location) {
+					state.inputType = 'location'
+					this.requestStates.set(userId, state)
+					await ctx.reply('📍 Введите место доставки:')
+				}
+				return
+			}
+
 			const user = await this.prisma.user.findUnique({
 				where: { telegramId: userId.toString() },
 			})
@@ -606,16 +797,20 @@ export class TelegramRequestService {
 
 			console.log('Создание запроса с данными:', state)
 
-			// Создаем запрос в базе данных, исключая поле description, которого нет в модели
+			// Переводим тип КРС и цель на русский язык
+			const russianTitle = `${this.translateCattleType(state.cattleType)} ${this.translatePurpose(state.purpose)}`
+
+			// Создаем запрос в базе данных
 			const request = await this.prisma.request.create({
 				data: {
-					title: state.title,
-					// Удаляем поле description, так как оно отсутствует в модели
+					title: russianTitle,
 					quantity: state.quantity,
 					weight: state.weight,
 					age: state.age,
 					price: state.price,
 					location: state.location,
+					region: state.region,
+					breed: state.breed || 'Не указано',
 					status: 'ACTIVE',
 					user: { connect: { id: user.id } },
 				},
@@ -627,15 +822,16 @@ export class TelegramRequestService {
 			// Находим подходящие предложения
 			const matches = await this.findMatches(request)
 
-			// Отправляем сообщение об успешном создании запроса, исключая поле description
+			// Отправляем сообщение об успешном создании запроса
 			await ctx.reply(
 				`✅ Запрос успешно создан!\n\n` +
-					`🐄 ${request.title}\n` +
-					// Удаляем строку с description
+					`🐄 ${russianTitle}\n` +
 					`🔢 Количество: ${request.quantity} голов\n` +
 					`⚖️ Вес: ${request.weight} кг\n` +
 					`🗓️ Возраст: ${request.age} мес.\n` +
 					`📍 Локация: ${request.location}\n` +
+					`🌍 Регион: ${request.region}\n` +
+					`🐮 Порода: ${request.breed}\n` +
 					`💰 Цена: ${request.price} ₽/гол\n\n` +
 					`${
 						matches.length > 0
@@ -679,11 +875,13 @@ export class TelegramRequestService {
 			const request = await this.prisma.request.findUnique({
 				where: { id: requestId },
 				include: {
+					user: true,
 					matches: {
 						include: {
 							offer: {
 								include: {
 									user: true,
+									images: true,
 								},
 							},
 						},
@@ -696,22 +894,9 @@ export class TelegramRequestService {
 				return
 			}
 
-			// Проверяем, принадлежит ли запрос текущему пользователю
-			if (request.userId !== user.id) {
-				await ctx.reply('❌ У вас нет доступа к этому запросу')
-				return
-			}
-
 			// Формируем сообщение с деталями запроса
 			let message = `📋 <b>Детали запроса #${request.id}</b>\n\n`
-			message += `🐄 <b>Название:</b> ${request.title}\n`
-
-			// Проверяем наличие поля description с использованием оператора in
-			// Это позволит избежать ошибки типизации
-			if ('description' in request && request.description) {
-				message += `📝 <b>Описание:</b> ${request.description}\n`
-			}
-
+			message += `🐮 <b>Название:</b> ${request.title}\n`
 			message += `🔢 <b>Количество:</b> ${request.quantity} голов\n`
 			message += `⚖️ <b>Вес:</b> ${request.weight} кг\n`
 			message += `🗓️ <b>Возраст:</b> ${request.age} мес.\n`
@@ -720,59 +905,53 @@ export class TelegramRequestService {
 			message += `🔄 <b>Статус:</b> ${this.getStatusText(request.status)}\n`
 			message += `📅 <b>Создан:</b> ${request.createdAt.toLocaleDateString()}\n\n`
 
-			// Добавляем информацию о совпадениях
-			if (request.matches.length > 0) {
-				message += `🔍 <b>Найдено ${request.matches.length} подходящих предложений:</b>\n\n`
+			// Создаем разные кнопки в зависимости от роли пользователя
+			const buttons = []
 
-				// Создаем кнопки для просмотра совпадений
-				const matchButtons = request.matches.map((match, index) => [
-					Markup.button.callback(
-						`${index + 1}. ${match.offer.title} (${match.offer.user.name})`,
-						`view_match_${match.id}`,
-					),
-				])
-
-				// Добавляем кнопки навигации
-				matchButtons.push([
-					Markup.button.callback('📋 Мои запросы', 'my_requests'),
-					Markup.button.callback('« Меню', 'menu'),
-				])
-
-				await ctx.reply(message, {
-					parse_mode: 'HTML',
-					reply_markup: {
-						inline_keyboard: matchButtons,
+			if (user.role === 'SUPPLIER') {
+				// Для поставщика показываем кнопку "Предложить КРС"
+				buttons.push([
+					{
+						text: '📝 Предложить КРС',
+						callback_data: `offer_cattle_${request.id}`,
 					},
-				})
-			} else {
-				message += '🔍 <b>Пока нет подходящих предложений.</b>\n'
-				message += 'Мы уведомим вас, когда появятся новые предложения.'
-
-				await ctx.reply(message, {
-					parse_mode: 'HTML',
-					reply_markup: {
-						inline_keyboard: [
-							[
-								Markup.button.callback(
-									'🔄 Обновить',
-									`view_request_${request.id}`,
-								),
-								Markup.button.callback(
-									'❌ Закрыть запрос',
-									`close_request_${request.id}`,
-								),
-							],
-							[
-								Markup.button.callback('📋 Мои запросы', 'my_requests'),
-								Markup.button.callback('« Меню', 'menu'),
-							],
-						],
+				])
+				buttons.push([
+					{ text: '« Назад к списку', callback_data: 'all_requests' },
+				])
+			} else if (user.role === 'BUYER' && request.userId === user.id) {
+				// Для покупателя (владельца запроса) показываем информацию о совпадениях
+				if (request.matches.length > 0) {
+					message += `🔍 <b>Найдено ${request.matches.length} предложений:</b>\n\n`
+					const matchButtons = request.matches.map((match, index) => [
+						{
+							text: `${index + 1}. ${match.offer.title} (${match.offer.user.name})`,
+							callback_data: `view_match_${match.id}`,
+						},
+					])
+					buttons.push(...matchButtons)
+				}
+				buttons.push([
+					{
+						text: '❌ Закрыть запрос',
+						callback_data: `close_request_${request.id}`,
 					},
-				})
+				])
+				buttons.push([{ text: '« Мои запросы', callback_data: 'my_requests' }])
 			}
+
+			// Добавляем кнопку меню для всех
+			buttons.push([{ text: '« Меню', callback_data: 'menu' }])
+
+			await ctx.reply(message, {
+				parse_mode: 'HTML',
+				reply_markup: {
+					inline_keyboard: buttons,
+				},
+			})
 		} catch (error) {
 			console.error('Ошибка при отображении деталей запроса:', error)
-			await ctx.reply('❌ Произошла ошибка при отображении запроса')
+			await ctx.reply('❌ Произошла ошибка при загрузке деталей запроса')
 		}
 	}
 
@@ -940,5 +1119,729 @@ export class TelegramRequestService {
 			console.error('Ошибка при закрытии запроса:', error)
 			await ctx.reply('❌ Произошла ошибка при закрытии запроса')
 		}
+	}
+
+	async handleViewRequestDetails(ctx) {
+		try {
+			const requestId = ctx.callbackQuery.data.split('_')[2]
+			const request = await this.prisma.request.findUnique({
+				where: { id: parseInt(requestId) },
+				include: {
+					matches: {
+						include: {
+							offer: {
+								include: {
+									user: true,
+									images: true,
+								},
+							},
+						},
+					},
+				},
+			})
+
+			if (!request) {
+				await ctx.reply('❌ Запрос не найден')
+				return
+			}
+
+			const message = `
+📋 <b>${request.title}</b>
+
+🔢 Количество: ${request.quantity} голов
+⚖️ Вес: ${request.weight} кг
+🗓️ Возраст: ${request.age} мес.
+📍 Локация: ${request.location}
+💰 Цена: ${request.price} ₽/гол
+🕒 Создан: ${request.createdAt.toLocaleDateString('ru-RU')}
+
+📬 Найденные предложения: ${request.matches.length}
+`
+
+			const buttons = []
+
+			// Добавляем кнопки для просмотра совпадений
+			if (request.matches.length > 0) {
+				buttons.push([
+					Markup.button.callback(
+						'🔍 Посмотреть предложения',
+						`view_matches_${request.id}`,
+					),
+				])
+			}
+
+			// Добавляем кнопки управления
+			buttons.push([
+				Markup.button.callback('🔄 Обновить', `refresh_request_${request.id}`),
+				Markup.button.callback('❌ Закрыть', `close_request_${request.id}`),
+			])
+
+			// Добавляем навигационные кнопки
+			buttons.push([
+				Markup.button.callback('« Назад к запросам', 'my_requests'),
+				Markup.button.callback('« Меню', 'menu'),
+			])
+
+			await ctx.reply(message, {
+				parse_mode: 'HTML',
+				...Markup.inlineKeyboard(buttons),
+			})
+		} catch (error) {
+			console.error('Ошибка при отображении деталей запроса:', error)
+			await ctx.reply('❌ Произошла ошибка при отображении запроса')
+		}
+	}
+
+	// Добавим новый метод для отображения всех активных запросов покупателей
+	async handleBuyerRequests(ctx) {
+		try {
+			const userId = ctx.from.id
+			const user = await this.prisma.user.findUnique({
+				where: { telegramId: userId.toString() },
+			})
+
+			if (!user) {
+				await ctx.reply('❌ Пользователь не найден')
+				return
+			}
+
+			if (user.role !== 'SUPPLIER') {
+				await ctx.reply('❌ Этот раздел доступен только для продавцов')
+				return
+			}
+
+			// Получаем все активные запросы
+			const requests = await this.prisma.request.findMany({
+				where: {
+					status: 'ACTIVE',
+				},
+				include: {
+					user: true,
+					matches: true,
+				},
+				orderBy: { createdAt: 'desc' },
+			})
+
+			if (!requests.length) {
+				await ctx.reply('📭 Активных запросов от покупателей пока нет', {
+					parse_mode: 'HTML',
+					...Markup.inlineKeyboard([
+						[Markup.button.callback('« Меню', 'menu')],
+					]),
+				})
+				return
+			}
+
+			// Отправляем каждый запрос отдельным сообщением
+			for (const request of requests) {
+				const message = `
+📋 <b>${request.title}</b>
+
+👤 Покупатель: ${request.user.name}
+🔢 Количество: ${request.quantity} голов
+⚖️ Вес: ${request.weight} кг
+🗓️ Возраст: ${request.age} мес.
+📍 Локация: ${request.location}
+💰 Цена: ${request.price} ₽/гол
+🕒 Создан: ${request.createdAt.toLocaleDateString('ru-RU')}
+`
+
+				const buttons = [
+					[
+						Markup.button.callback(
+							'📤 Предложить',
+							`offer_to_request_${request.id}`,
+						),
+					],
+					[
+						Markup.button.callback(
+							'📞 Связаться с покупателем',
+							`contact_buyer_${request.userId}`,
+						),
+					],
+
+					[Markup.button.callback('« Меню', 'menu')],
+				]
+
+				await ctx.reply(message, {
+					parse_mode: 'HTML',
+					...Markup.inlineKeyboard(buttons),
+				})
+			}
+		} catch (error) {
+			console.error('Ошибка при отображении запросов покупателей:', error)
+			await ctx.reply('❌ Произошла ошибка при загрузке запросов')
+		}
+	}
+
+	// Метод для обработки выбора объявления и создания match
+	@Action(/^send_offer_.*/)
+	async handleSendOffer(@Ctx() ctx: Context) {
+		try {
+			await ctx.answerCbQuery()
+			const callbackQuery = ctx.callbackQuery as any
+			const [, requestId, offerId] = callbackQuery.data.split('_')
+
+			// Создаем связь между запросом и предложением
+			const match = await this.prisma.match.create({
+				data: {
+					request: { connect: { id: parseInt(requestId) } },
+					offer: { connect: { id: offerId } },
+					status: 'PENDING',
+				},
+				include: {
+					request: {
+						include: { user: true },
+					},
+					offer: {
+						include: { user: true },
+					},
+				},
+			})
+
+			// Отправляем уведомление покупателю
+			if (match.request.user.telegramId) {
+				const buyerMessage = `
+🔔 <b>Новое предложение по вашему запросу!</b>
+
+📋 Ваш запрос: ${match.request.title}
+👤 Поставщик: ${match.offer.user.name}
+🐮 Предложение: ${match.offer.title}
+💰 Цена: ${match.offer.price}₽/${
+					match.offer.priceType === 'PER_HEAD' ? 'голову' : 'кг'
+				}
+`
+
+				await ctx.telegram.sendMessage(
+					match.request.user.telegramId,
+					buyerMessage,
+					{
+						parse_mode: 'HTML',
+						reply_markup: {
+							inline_keyboard: [
+								[
+									{
+										text: '👁️ Посмотреть предложение',
+										callback_data: `view_match_${match.id}`,
+									},
+								],
+							],
+						},
+					},
+				)
+			}
+
+			// Отправляем подтверждение поставщику
+			await ctx.reply('✅ Предложение успешно отправлено покупателю', {
+				reply_markup: {
+					inline_keyboard: [
+						[
+							{
+								text: '« Назад к запросу',
+								callback_data: `view_request_${requestId}`,
+							},
+						],
+						[{ text: '« Меню', callback_data: 'menu' }],
+					],
+				},
+			})
+		} catch (error) {
+			console.error('Ошибка при отправке предложения:', error)
+			await ctx.reply('❌ Произошла ошибка при отправке предложения')
+		}
+	}
+
+	// Метод для обработки выбора объявления для отправки
+	@Action(/^offer_cattle_.*/)
+	async handleOfferCattle(@Ctx() ctx: Context) {
+		try {
+			await ctx.answerCbQuery()
+			const callbackQuery = ctx.callbackQuery as any
+			const requestId = callbackQuery.data.replace('offer_cattle_', '')
+
+			const userId = ctx.from.id
+			const user = await this.prisma.user.findUnique({
+				where: { telegramId: userId.toString() },
+				include: {
+					offers: {
+						where: { status: 'APPROVED' },
+						include: {
+							images: true,
+						},
+					},
+				},
+			})
+
+			if (!user || user.role !== 'SUPPLIER') {
+				await ctx.reply('❌ Доступно только для поставщиков')
+				return
+			}
+
+			// ... остальной код метода ...
+		} catch (error) {
+			console.error('Ошибка при предложении КРС:', error)
+			await ctx.reply('❌ Произошла ошибка при обработке запроса')
+		}
+	}
+
+	// Добавляем метод для отображения всех запросов
+	async showAllRequests(ctx: Context) {
+		try {
+			// Получаем все активные запросы
+			const requests = await this.prisma.request.findMany({
+				where: { status: 'ACTIVE' },
+				include: {
+					user: true,
+					matches: true,
+				},
+				orderBy: {
+					createdAt: 'desc',
+				},
+			})
+
+			if (requests.length === 0) {
+				await ctx.reply('📭 Активных запросов пока нет')
+				return
+			}
+
+			// Формируем сообщение со списком запросов
+			let message = '📋 <b>Активные запросы покупателей:</b>\n\n'
+
+			// Создаем сообщение для каждого запроса
+			for (const request of requests) {
+				message += ` <b>${request.title}</b>\n`
+				message += `👤 Покупатель: ${request.user.name}\n`
+				message += `🔢 Количество: ${request.quantity} голов\n`
+				message += `⚖️ Вес: ${request.weight} кг\n`
+				message += `🗓️ Возраст: ${request.age} мес.\n`
+				message += `📍 Локация: ${request.location}\n`
+				message += `💰 Цена: ${request.price} ₽/гол\n`
+				message += `📬 Предложений: ${request.matches.length}\n\n`
+			}
+
+			// Создаем кнопки для каждого запроса
+			const buttons = requests.map(request => [
+				{
+					text: `${request.title} - ${request.quantity} голов`,
+					callback_data: `view_request_${request.id}`,
+				},
+			])
+
+			// Добавляем кнопку возврата в меню
+			buttons.push([{ text: '« Меню', callback_data: 'menu' }])
+
+			await ctx.reply(message, {
+				parse_mode: 'HTML',
+				reply_markup: {
+					inline_keyboard: buttons,
+				},
+			})
+		} catch (error) {
+			console.error('Ошибка при отображении запросов:', error)
+			await ctx.reply('❌ Произошла ошибка при загрузке запросов')
+		}
+	}
+
+	@Action(/^view_matches_.*/)
+	async handleViewMatches(@Ctx() ctx: Context) {
+		try {
+			const callbackQuery = ctx.callbackQuery as any
+			const offerId = callbackQuery.data.replace('view_matches_', '')
+
+			const offer = await this.prisma.offer.findUnique({
+				where: { id: offerId },
+				include: {
+					matches: {
+						include: {
+							request: {
+								include: {
+									user: true,
+								},
+							},
+						},
+					},
+				},
+			})
+
+			if (!offer) {
+				await ctx.reply('❌ Объявление не найдено')
+				return
+			}
+
+			// Формируем сообщение со списком заявок
+			const message =
+				`📋 <b>Заявки на покупку (${offer.matches.length}):</b>\n\n` +
+				`❗️ Контакты покупателей будут доступны после проверки администратором`
+
+			// Создаем кнопки для каждой заявки
+			const buttons = offer.matches.map(match => [
+				{
+					text: `${match.request.user.name} - ${match.request.quantity} голов`,
+					callback_data: `view_match_details_${match.id}`,
+				},
+			])
+
+			buttons.push([
+				{
+					text: '« Назад к объявлению',
+					callback_data: `view_my_offer_${offerId}`,
+				},
+			])
+			buttons.push([{ text: '« Меню', callback_data: 'menu' }])
+
+			await ctx.reply(message, {
+				parse_mode: 'HTML',
+				reply_markup: { inline_keyboard: buttons },
+			})
+		} catch (error) {
+			console.error('Ошибка при просмотре заявок:', error)
+			await ctx.reply('❌ Произошла ошибка при загрузке заявок')
+		}
+	}
+
+	// Добавим метод для обработки выбора типа КРС
+	async handleCattleTypeSelection(ctx: Context, cattleType: string) {
+		console.log('Вызван handleCattleTypeSelection с типом:', cattleType)
+		const userId = ctx.from.id
+		const state = this.requestStates.get(userId)
+
+		console.log('Текущее состояние:', state)
+
+		if (!state) {
+			await ctx.reply('❌ Пожалуйста, начните создание запроса заново')
+			return
+		}
+
+		state.cattleType = cattleType as CattleType
+		state.inputType = 'purpose'
+		this.requestStates.set(userId, state)
+		console.log('Обновленное состояние:', this.requestStates.get(userId))
+
+		// Запрашиваем цель покупки
+		await ctx.reply('🎯 Выберите цель покупки КРС:', {
+			reply_markup: {
+				inline_keyboard: [
+					[
+						{ text: '🥩 Мясо', callback_data: 'request_purpose_MEAT' },
+						{
+							text: '🐄 Разведение',
+							callback_data: 'request_purpose_BREEDING',
+						},
+					],
+					[
+						{
+							text: '🥛 Молочное производство',
+							callback_data: 'request_purpose_DAIRY',
+						},
+						{ text: '🍖 Откорм', callback_data: 'request_purpose_FATTENING' },
+					],
+				],
+			},
+		})
+	}
+
+	// Обработка выбора цели
+	async handlePurposeSelection(ctx: Context, purpose: string) {
+		console.log('Вызван handlePurposeSelection с целью:', purpose)
+		const userId = ctx.from.id
+		const state = this.requestStates.get(userId)
+
+		console.log('Текущее состояние:', state)
+
+		if (!state) {
+			await ctx.reply('❌ Пожалуйста, начните создание запроса заново')
+			return
+		}
+
+		state.purpose = purpose as Purpose
+		state.inputType = 'region' // Сначала запрашиваем регион вместо породы
+		this.requestStates.set(userId, state)
+		console.log('Обновленное состояние:', this.requestStates.get(userId))
+
+		// Сначала запрашиваем регион
+		await ctx.reply('🌍 Введите регион покупки:')
+	}
+
+	// Завершение создания запроса
+	async completeRequest(ctx: Context) {
+		const userId = ctx.from.id
+		const state = this.requestStates.get(userId)
+
+		if (!state) {
+			await ctx.reply('❌ Пожалуйста, начните создание запроса заново')
+			return
+		}
+
+		try {
+			// Получаем пользователя для связи
+			const user = await this.prisma.user.findUnique({
+				where: { telegramId: userId.toString() },
+			})
+
+			if (!user) {
+				await ctx.reply('❌ Пользователь не найден')
+				return
+			}
+
+			// Создаем запрос в базе данных с дополнительными полями
+			const request = await this.prisma.request.create({
+				data: {
+					title: `${state.cattleType} для ${state.purpose}`,
+					description: state.description || '',
+					quantity: state.quantity,
+					weight: state.weight,
+					price: state.price,
+					location: state.location,
+					region: state.region,
+					breed: state.breed,
+					age: state.age,
+					deadline: state.deadline,
+					isExport: state.isExport,
+					isBreeding: state.isBreeding,
+					user: { connect: { id: user.id } },
+					status: 'ACTIVE',
+				},
+			})
+
+			// Очищаем состояние
+			this.requestStates.delete(userId)
+
+			// Ищем релевантные предложения с учетом региона
+			const relevantOffers = await this.findRelevantOffers(request)
+
+			// Отправляем сообщение об успешном создании запроса с дополнительными полями
+			await ctx.reply(
+				'✅ Ваш запрос успешно создан!\n\n' +
+					`Тип КРС: ${state.cattleType}\n` +
+					`Порода: ${state.breed}\n` +
+					`Цель: ${state.purpose}\n` +
+					`Регион: ${state.region}\n` +
+					`Количество: ${state.quantity} голов\n` +
+					`Вес: ${state.weight} кг\n` +
+					`Возраст: ${state.age} мес.\n` +
+					`Сроки: ${state.deadline}\n` +
+					`Цена: ${state.price} руб.\n` +
+					`Местоположение фермы: ${state.location}\n` +
+					`Экспорт: ${state.isExport ? 'Да' : 'Нет'}\n` +
+					`Племенное разведение: ${state.isBreeding ? 'Да' : 'Нет'}\n` +
+					(state.description ? `Описание: ${state.description}\n\n` : '\n') +
+					'Ваш запрос отправлен на поиск подходящих предложений.',
+			)
+
+			// Показываем релевантные предложения, если они есть
+			if (relevantOffers.length > 0) {
+				await ctx.reply('🔍 Найдены подходящие предложения:')
+
+				for (const offer of relevantOffers) {
+					const priceInfo =
+						offer.priceType === 'PER_HEAD'
+							? `${offer.price} руб. за голову`
+							: `${offer.price} руб. за кг`
+
+					await ctx.reply(
+						`🐄 ${offer.title}\n\n` +
+							`Тип КРС: ${offer.cattleType}\n` +
+							`Количество: ${offer.quantity} голов\n` +
+							`Вес: ${offer.weight} кг\n` +
+							`Цена: ${priceInfo}\n` +
+							`Местоположение: ${offer.location}\n\n` +
+							`${offer.description || ''}`,
+						{
+							reply_markup: {
+								inline_keyboard: [
+									[
+										{
+											text: '📞 Связаться с продавцом',
+											callback_data: `contact_seller_${offer.id}`,
+										},
+									],
+								],
+							},
+						},
+					)
+				}
+			} else {
+				await ctx.reply(
+					'❗ К сожалению, подходящих предложений пока нет.\n\n' +
+						'Ожидайте и мониторьте все объявления. Мы уведомим вас, когда появятся подходящие предложения.',
+				)
+			}
+
+			// Предлагаем вернуться в меню
+			await ctx.reply('Выберите дальнейшее действие:', {
+				reply_markup: {
+					inline_keyboard: [
+						[{ text: '📋 Мои запросы', callback_data: 'my_requests' }],
+						[{ text: '📱 Меню', callback_data: 'menu' }],
+					],
+				},
+			})
+		} catch (error) {
+			console.error('Ошибка при создании запроса:', error)
+			await ctx.reply(
+				'❌ Произошла ошибка при создании запроса. Пожалуйста, попробуйте позже.',
+			)
+		}
+	}
+
+	// Поиск релевантных предложений
+	async findRelevantOffers(request: any) {
+		// Рассчитываем диапазон цен (±30%)
+		const minPrice = Math.floor(request.price * 0.7)
+		const maxPrice = Math.ceil(request.price * 1.3)
+
+		// Ищем предложения, соответствующие запросу с учетом региона
+		const offers = await this.prisma.offer.findMany({
+			where: {
+				cattleType: request.title.split(' ')[0] as any,
+				quantity: {
+					gte: request.quantity * 0.7,
+					lte: request.quantity * 1.3,
+				},
+				weight: {
+					gte: request.weight * 0.7,
+					lte: request.weight * 1.3,
+				},
+				price: {
+					gte: minPrice,
+					lte: maxPrice,
+				},
+				...(request.region
+					? {
+							OR: [
+								{ region: request.region },
+								{ region: { contains: request.region } },
+								{ location: { contains: request.region } },
+							],
+						}
+					: {}),
+				status: 'APPROVED' as const,
+			},
+			take: 5,
+		})
+
+		return offers
+	}
+
+	// Обработка запроса на контакт с продавцом
+	async handleRequestContacts(ctx: Context) {
+		try {
+			await ctx.answerCbQuery()
+
+			// Извлекаем ID объявления из callback_data
+			//@ts-ignore
+			const callbackData = ctx.callbackQuery.data
+			const offerId = callbackData.replace('request_contacts_', '')
+			const userId = ctx.from.id
+
+			// Получаем пользователя из базы данных
+			const user = await this.prisma.user.findUnique({
+				where: { telegramId: userId.toString() },
+			})
+
+			if (!user) {
+				await ctx.reply('❌ Пожалуйста, сначала авторизуйтесь')
+				return
+			}
+
+			// Получаем объявление
+			const offer = await this.prisma.offer.findUnique({
+				where: { id: offerId },
+				include: { user: true },
+			})
+
+			if (!offer) {
+				await ctx.reply('❌ Объявление не найдено или было удалено')
+				return
+			}
+
+			// Проверяем наличие существующих запросов
+			const existingRequest = await this.prisma.contactRequest.findFirst({
+				where: {
+					offerId: offerId,
+					buyerId: user.id,
+					status: 'PENDING',
+				},
+			})
+
+			if (existingRequest) {
+				await ctx.reply(
+					'⚠️ Вы уже отправили запрос на контакты для этого объявления. Ожидайте подтверждения от администратора.',
+				)
+				return
+			}
+
+			// Сохраняем состояние для дальнейшей обработки комментария
+			const requestState = {
+				offerId,
+				inputType: 'contact_request_comment',
+				photos: [],
+				videos: [],
+			}
+			this.offerService.updateOfferState(userId, requestState)
+
+			await ctx.reply(
+				'📝 Пожалуйста, добавьте комментарий к вашему запросу на контакты (например, опишите сколько и когда вы планируете купить):',
+			)
+		} catch (error) {
+			console.error('Ошибка при запросе контактов:', error)
+			await ctx.reply('❌ Произошла ошибка при обработке запроса')
+		}
+	}
+
+	// Обработка выбора экспорта
+	async handleExportSelection(ctx: Context, isExport: boolean) {
+		const userId = ctx.from.id
+		const state = this.requestStates.get(userId)
+
+		if (!state) {
+			await ctx.reply('❌ Пожалуйста, начните создание запроса заново')
+			return
+		}
+
+		state.isExport = isExport
+
+		// Спрашиваем о племенном разведении
+		state.inputType = 'breeding'
+		this.requestStates.set(userId, state)
+
+		await ctx.reply('🧬 Планируется ли племенное разведение?', {
+			reply_markup: {
+				inline_keyboard: [
+					[
+						{ text: '✅ Да', callback_data: 'request_breeding_yes' },
+						{ text: '❌ Нет', callback_data: 'request_breeding_no' },
+					],
+				],
+			},
+		})
+	}
+
+	// Обработка выбора племенного разведения
+	async handleBreedingSelection(ctx: Context, isBreeding: boolean) {
+		const userId = ctx.from.id
+		const state = this.requestStates.get(userId)
+
+		if (!state) {
+			await ctx.reply('❌ Пожалуйста, начните создание запроса заново')
+			return
+		}
+
+		state.isBreeding = isBreeding
+
+		// Переходим к описанию
+		state.inputType = 'description'
+		this.requestStates.set(userId, state)
+
+		await ctx.reply(
+			'📝 Введите дополнительное описание (или нажмите "Пропустить"):',
+			{
+				reply_markup: {
+					inline_keyboard: [
+						[{ text: '⏩ Пропустить', callback_data: 'skip_description' }],
+					],
+				},
+			},
+		)
 	}
 }

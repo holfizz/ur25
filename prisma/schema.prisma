@@ -20,7 +20,7 @@ enum BuyerType {
   AGRICULTURAL // с/х предприятие
   MEAT_FACTORY // мясокомбинат
   FEEDLOT // откормочная площадка
-  GRANT_MEMBER // участник гранта
+  GRANT
 }
 
 enum Purpose {
@@ -56,6 +56,19 @@ enum PriceType {
   PER_KG // За кг
 }
 
+enum UserStatus {
+  REGULAR
+  PREMIUM
+  SUPER_PREMIUM
+}
+
+enum OfferStatus {
+  PENDING // На модерации
+  APPROVED // Одобрено
+  REJECTED // Отклонено
+  ARCHIVED // В архиве
+}
+
 model User {
   id        String   @id @default(uuid())
   createdAt DateTime @default(now()) @map("created_at")
@@ -89,12 +102,16 @@ model User {
   ogrn          String? // ОГРН
   mercuryNumber String? // Номер в системе "Меркурий"
 
-  // Добавьте эти связи
-  contactRequests ContactRequest[] @relation("ContactRequester")
-  chatsAsUser1    Chat[]           @relation("ChatUser1")
-  chatsAsUser2    Chat[]           @relation("ChatUser2")
-  dealsAsBuyer    Deal[]           @relation("DealBuyer")
-  dealsAsSeller   Deal[]           @relation("DealSeller")
+  // Связи с запросами на контакты
+  buyerRequests  ContactRequest[] @relation("BuyerRequests")
+  sellerRequests ContactRequest[] @relation("SellerRequests")
+
+  chatsAsUser1  Chat[] @relation("ChatUser1")
+  chatsAsUser2  Chat[] @relation("ChatUser2")
+  dealsAsBuyer  Deal[] @relation("DealBuyer")
+  dealsAsSeller Deal[] @relation("DealSeller")
+
+  status UserStatus @default(REGULAR)
 
   @@map("users")
 }
@@ -104,17 +121,24 @@ model Request {
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
   title       String
-  description String? // Добавляем поле description (опциональное)
+  description String?
   quantity    Int
   weight      Int
   age         Int
   price       Int
   location    String
+  region      String
+  breed       String
   status      String    @default("ACTIVE")
   user        User      @relation(fields: [userId], references: [id])
   userId      String
   matches     Match[]
   Message     Message[]
+
+  // Добавляем новые поля для расширенной функциональности
+  deadline   DateTime?
+  isExport   Boolean   @default(false)
+  isBreeding Boolean   @default(false)
 
   @@map("requests")
 }
@@ -130,20 +154,20 @@ model Offer {
   weight             Int?
   age                Int?
   price              Float?
-  priceType          PriceType @default(PER_HEAD)
+  priceType          PriceType   @default(PER_HEAD)
   pricePerKg         Float?
   pricePerHead       Float?
-  gutDiscount        Float?    @default(0) // Скидка на ливер (%)
+  gutDiscount        Float?      @default(0) // Скидка на ливер (%)
   location           String?
   region             String?
   fullAddress        String?
-  customsUnion       Boolean?  @default(false) // Таможенный союз
-  status             String    @default("ACTIVE") // ACTIVE, INACTIVE, COMPLETED
+  customsUnion       Boolean?    @default(false) // Таможенный союз
+  status             OfferStatus @default(PENDING)
   userId             String
-  user               User      @relation(fields: [userId], references: [id])
+  user               User        @relation(fields: [userId], references: [id])
   images             Image[]
   videoUrl           String?
-  lastActualityCheck DateTime  @default(now())
+  lastActualityCheck DateTime    @default(now())
 
   // Новые поля для КРС
   breed         String?
@@ -157,6 +181,8 @@ model Offer {
   contactRequests ContactRequest[]
   deals           Deal[]
   matches         Match[]
+
+  gktDiscount Int @default(0) // Скидка на ЖКТ в процентах
 
   @@map("offers")
 }
@@ -251,14 +277,21 @@ model RegistrationRequest {
 }
 
 model ContactRequest {
-  id          String   @id @default(uuid())
-  offerId     String
-  offer       Offer    @relation(fields: [offerId], references: [id])
-  requesterId String
-  requester   User     @relation("ContactRequester", fields: [requesterId], references: [id])
-  status      String   @default("PENDING") // PENDING, APPROVED, REJECTED
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id      String  @id @default(uuid())
+  status  String // PENDING, APPROVED, REJECTED
+  comment String? // Поле для комментария
+
+  offer   Offer  @relation(fields: [offerId], references: [id])
+  offerId String
+
+  buyer   User   @relation("BuyerRequests", fields: [buyerId], references: [id])
+  buyerId String
+
+  seller   User   @relation("SellerRequests", fields: [sellerId], references: [id])
+  sellerId String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model Chat {
