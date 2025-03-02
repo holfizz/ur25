@@ -735,21 +735,25 @@ export class TelegramAuthService {
 				return
 			}
 
-			if (type === 'individual') {
-				// Для физ.лиц сразу переходим к email
-				state.inputType = 'email'
-				this.registrationStates.set(userId, state)
-				await ctx.reply('📧 Введите ваш email:')
-			} else if (type === 'organization') {
-				// Для организаций запрашиваем ИНН/ОГРН
-				state.inputType = 'inn_ogrn'
-				this.registrationStates.set(userId, state)
-				await ctx.reply('Введите ваш ИНН или ОГРН:', {
+			state.entityType = type
+			this.registrationStates.set(userId, state)
+
+			if (type === 'INDIVIDUAL') {
+				// Для физ.лиц сразу переходим к вводу ИНН
+				state.inputType = 'inn'
+				await ctx.reply(
+					'📝 Введите ваш ИНН:\n\n' +
+						'ИНН должен содержать 12 цифр\n' +
+						'Пример: 500100732259',
+				)
+			} else if (type === 'ORGANIZATION') {
+				// Для организаций даем выбор между ИНН и ОГРН
+				await ctx.reply('Выберите тип идентификатора:', {
 					reply_markup: {
 						inline_keyboard: [
 							[
-								{ text: '📝 Ввести ИНН', callback_data: 'input_inn' },
-								{ text: '📋 Ввести ОГРН', callback_data: 'input_ogrn' },
+								{ text: '📝 ИНН', callback_data: 'input_inn' },
+								{ text: '📋 ОГРН', callback_data: 'input_ogrn' },
 							],
 						],
 					},

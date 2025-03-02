@@ -378,27 +378,12 @@ export class TelegramUpdate {
 			switch (callbackQuery.data) {
 				case 'gut_yes':
 					await ctx.answerCbQuery()
-					const state = this.offerService.getOfferState(userId)
-					if (!state) {
-						await ctx.reply('❌ Начните создание объявления заново')
-						return
-					}
-					state.inputType = 'gkt_discount'
-					this.offerService.updateOfferState(userId, state)
-					await ctx.reply('Введите процент скидки на ЖКТ (число от 0 до 100):')
+					await this.offerService.handleGutDiscountSelection(ctx, true)
 					break
 
 				case 'gut_no':
 					await ctx.answerCbQuery()
-					const noState = this.offerService.getOfferState(userId)
-					if (!noState) {
-						await ctx.reply('❌ Начните создание объявления заново')
-						return
-					}
-					noState.gktDiscount = 0
-					noState.inputType = 'region'
-					this.offerService.updateOfferState(userId, noState)
-					await ctx.reply('📍 Введите регион:')
+					await this.offerService.handleGutDiscountSelection(ctx, false)
 					break
 
 				case 'create_request':
@@ -459,6 +444,185 @@ export class TelegramUpdate {
 
 				case 'browse_offers':
 					await this.offerService.handleBrowseOffers(ctx, 1)
+					break
+
+				case 'approve_comment':
+					{
+						const requestId = callbackQuery.data.replace('approve_comment_', '')
+
+						// Обновляем статус запроса
+						await this.prisma.contactRequest.update({
+							where: { id: requestId },
+							data: { status: 'APPROVED' },
+						})
+
+						// Получаем запрос с данными покупателя
+						const request = await this.prisma.contactRequest.findUnique({
+							where: { id: requestId },
+							include: {
+								buyer: true, // Включаем данные покупателя
+								offer: {
+									include: {
+										user: true, // Включаем данные продавца через объявление
+									},
+								},
+							},
+						})
+
+						// Уведомляем покупателя
+						if (request.buyer.telegramId) {
+							await this.telegramClient.sendMessage(
+								request.buyer.telegramId,
+								'✅ Ваш запрос на получение контактов был одобрен администратором.',
+							)
+						}
+
+						await ctx.answerCbQuery('Запрос одобрен')
+					}
+					break
+
+				case 'reject_comment':
+					{
+						const requestId = callbackQuery.data.replace('reject_comment_', '')
+
+						// Обновляем статус запроса
+						await this.prisma.contactRequest.update({
+							where: { id: requestId },
+							data: { status: 'REJECTED' },
+						})
+
+						// Получаем запрос с данными покупателя
+						const request = await this.prisma.contactRequest.findUnique({
+							where: { id: requestId },
+							include: {
+								buyer: true, // Включаем данные покупателя
+								offer: {
+									include: {
+										user: true, // Включаем данные продавца через объявление
+									},
+								},
+							},
+						})
+
+						// Уведомляем покупателя
+						if (request.buyer.telegramId) {
+							await this.telegramClient.sendMessage(
+								request.buyer.telegramId,
+								'❌ Ваш запрос на получение контактов был отклонен администратором.',
+							)
+						}
+
+						await ctx.answerCbQuery('Запрос отклонен')
+					}
+					break
+
+				case 'supplier_type_individual':
+					await ctx.answerCbQuery()
+					await this.authService.handleSupplierTypeSelection(ctx, 'INDIVIDUAL')
+					break
+
+				case 'supplier_type_organization':
+					await ctx.answerCbQuery()
+					await this.authService.handleSupplierTypeSelection(
+						ctx,
+						'ORGANIZATION',
+					)
+					break
+
+				case 'input_inn':
+					await ctx.answerCbQuery()
+					const innState = await this.authService.getRegistrationState(userId)
+					if (innState) {
+						innState.inputType = 'inn'
+						await this.authService.updateRegistrationState(userId, innState)
+						await ctx.reply(
+							'📝 Введите ИНН организации:\n\n' +
+								'ИНН должен содержать 10 цифр\n' +
+								'Пример: 7736207543',
+						)
+					}
+					break
+
+				case 'input_ogrn':
+					await ctx.answerCbQuery()
+					const ogrnState = await this.authService.getRegistrationState(userId)
+					if (ogrnState) {
+						ogrnState.inputType = 'ogrn'
+						await this.authService.updateRegistrationState(userId, ogrnState)
+						await ctx.reply(
+							'📝 Введите ОГРН организации:\n\n' +
+								'ОГРН должен содержать 13 цифр\n' +
+								'Пример: 1027700132195',
+						)
+					}
+					break
+
+				case 'cattle_type_CALVES':
+					await ctx.answerCbQuery()
+					await this.offerService.handleCattleTypeSelection(ctx, 'CALVES')
+					break
+
+				case 'cattle_type_BULL_CALVES':
+					await ctx.answerCbQuery()
+					await this.offerService.handleCattleTypeSelection(ctx, 'BULL_CALVES')
+					break
+
+				case 'cattle_type_HEIFERS':
+					await ctx.answerCbQuery()
+					await this.offerService.handleCattleTypeSelection(ctx, 'HEIFERS')
+					break
+
+				case 'cattle_type_BREEDING_HEIFERS':
+					await ctx.answerCbQuery()
+					await this.offerService.handleCattleTypeSelection(
+						ctx,
+						'BREEDING_HEIFERS',
+					)
+					break
+
+				case 'cattle_type_BULLS':
+					await ctx.answerCbQuery()
+					await this.offerService.handleCattleTypeSelection(ctx, 'BULLS')
+					break
+
+				case 'cattle_type_COWS':
+					await ctx.answerCbQuery()
+					await this.offerService.handleCattleTypeSelection(ctx, 'COWS')
+					break
+
+				case 'purpose_BREEDING':
+					await ctx.answerCbQuery()
+					await this.offerService.handlePurposeSelection(ctx, 'BREEDING')
+					break
+
+				case 'purpose_COMMERCIAL':
+					await ctx.answerCbQuery()
+					await this.offerService.handlePurposeSelection(ctx, 'COMMERCIAL')
+					break
+
+				case 'price_type_PER_HEAD':
+					await ctx.answerCbQuery()
+					await this.offerService.handlePriceTypeSelection(ctx, 'PER_HEAD')
+					break
+
+				case 'price_type_PER_KG':
+					await ctx.answerCbQuery()
+					await this.offerService.handlePriceTypeSelection(ctx, 'PER_KG')
+					break
+
+				case 'customs_yes':
+					await ctx.answerCbQuery()
+					await this.offerService.handleCustomsUnionSelection(ctx, true)
+					break
+
+				case 'customs_no':
+					await ctx.answerCbQuery()
+					await this.offerService.handleCustomsUnionSelection(ctx, false)
+					break
+
+				case 'my_ads':
+					await ctx.answerCbQuery()
+					await this.offerService.handleMyAds(ctx)
 					break
 
 				default:

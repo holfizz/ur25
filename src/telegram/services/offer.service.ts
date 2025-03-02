@@ -52,6 +52,8 @@ interface OfferState {
 	userId?: string
 	address?: string
 	offerId?: string // Добавляем свойство offerId
+	contactRequestId?: string // Добавляем поле для ID запроса контактов
+	commentText?: string // Добавляем поле для текста комментария
 }
 
 @Injectable()
@@ -388,20 +390,11 @@ export class TelegramOfferService {
 
 				case 'region':
 					state.region = text
-					state.inputType = 'customs_union'
+					state.inputType = 'full_address' // Меняем на запрос полного адреса вместо таможенного союза
 					this.offerStates.set(userId, state)
 
-					// Спрашиваем о Таможенном Союзе
-					await ctx.reply('Состоит ли в Реестре Таможенного Союза?', {
-						reply_markup: {
-							inline_keyboard: [
-								[
-									{ text: '✅ Да', callback_data: 'customs_yes' },
-									{ text: '❌ Нет', callback_data: 'customs_no' },
-								],
-							],
-						},
-					})
+					// Запрашиваем полный адрес
+					await ctx.reply('📍 Введите полный адрес:')
 					break
 
 				case 'full_address':
@@ -462,7 +455,7 @@ export class TelegramOfferService {
 									: `${offer.pricePerKg} ₽/кг`
 							}
 							Регион: ${offer.region || 'Не указан'}
-							${offer.gktDiscount ? `Скидка ЖКТ: ${offer.gktDiscount}%` : ''}
+							${offer.gktDiscount > 0 ? `Скидка ЖКТ: ${offer.gktDiscount}%` : ''}
 							${offer.customsUnion ? 'Для стран Таможенного союза' : ''}`
 
 							const answer = await this.cozeService.generateResponse(
@@ -701,6 +694,74 @@ export class TelegramOfferService {
 
 					// Очищаем состояние
 					this.offerStates.delete(userId)
+					break
+
+				case 'waiting_for_comment':
+					try {
+						if (!state.contactRequestId) {
+							await ctx.reply('❌ Ошибка: ID запроса не найден')
+							return
+						}
+
+						// Обновляем существующий запрос, добавляя комментарий
+						await this.prisma.contactRequest.update({
+							where: { id: state.contactRequestId },
+							data: {
+								comment: text, // Используем существующее поле или добавьте его в модель
+								status: 'PENDING',
+							},
+						})
+
+						// Уведомляем администраторов о новом комментарии
+						const admins = await this.prisma.user.findMany({
+							where: { role: 'ADMIN' },
+						})
+
+						for (const admin of admins) {
+							if (admin.telegramId) {
+								await this.telegramClient.sendMessage(
+									admin.telegramId,
+									`📝 Новый комментарий к запросу контактов #${state.contactRequestId}\n\n` +
+										`Текст: ${text}\n\n` +
+										`Действия:`,
+									{
+										reply_markup: {
+											inline_keyboard: [
+												[
+													{
+														text: '✅ Одобрить',
+														callback_data: `approve_comment_${state.contactRequestId}`,
+													},
+													{
+														text: '❌ Отклонить',
+														callback_data: `reject_comment_${state.contactRequestId}`,
+													},
+												],
+											],
+										},
+									},
+								)
+							}
+						}
+
+						await ctx.reply(
+							'✅ Ваш комментарий отправлен на модерацию. ' +
+								'Вы получите уведомление после рассмотрения.',
+							{
+								reply_markup: {
+									inline_keyboard: [
+										[{ text: '« В главное меню', callback_data: 'menu' }],
+									],
+								},
+							},
+						)
+
+						// Очищаем состояние
+						this.offerStates.delete(userId)
+					} catch (error) {
+						console.error('Ошибка при сохранении комментария:', error)
+						await ctx.reply('❌ Произошла ошибка при сохранении комментария')
+					}
 					break
 			}
 		} catch (error) {
@@ -964,7 +1025,7 @@ ${offer.description}
 				key: uploadedFile.key,
 			})
 
-			this.offerStates.set(userId, offerState)
+			this.updateOfferState(userId, offerState)
 
 			if (offerState.photos.length === 1) {
 				await ctx.reply('Отлично! Теперь введите название объявления:')
@@ -1402,7 +1463,7 @@ ${cattleTypeText} - ${offer.breed || 'Порода не указана'}
 💰 Цена: ${offer.priceType === 'PER_HEAD' ? `${offer.pricePerHead} ₽/гол` : `${offer.pricePerKg} ₽/кг`}
 📍 Регион: ${offer.region || 'Не указан'}
 ${offer.description ? `\n📝 Описание: ${offer.description}` : ''}
-${offer.gktDiscount ? `\n🎯 Скидка ЖКТ: ${offer.gktDiscount}%` : ''}
+${offer.gktDiscount > 0 ? `\n🎯 Скидка ЖКТ: ${offer.gktDiscount}%` : ''}
 ${offer.customsUnion ? '\n🌍 Для стран ТС' : ''}
 
 📅 Создано: ${new Date(offer.createdAt).toLocaleDateString('ru-RU')}`
@@ -3009,6 +3070,240 @@ ${offer.customsUnion ? '- Ввоз из стран Таможенного сою
 		} catch (error) {
 			console.error('Ошибка при финализации объявления:', error)
 			await ctx.reply('❌ Произошла ошибка при создании объявления')
+		}
+	}
+
+	async showCattleTypeSelection(ctx: Context) {
+		await ctx.reply('🐮 Выберите тип КРС:', {
+			reply_markup: {
+				inline_keyboard: [
+					[
+						{ text: '🐄 Телята', callback_data: 'cattle_type_CALVES' },
+						{ text: '🐂 Бычки', callback_data: 'cattle_type_BULL_CALVES' },
+					],
+					[
+						{ text: '🐄 Телки', callback_data: 'cattle_type_HEIFERS' },
+						{
+							text: '🐄 Нетели',
+							callback_data: 'cattle_type_BREEDING_HEIFERS',
+						},
+					],
+					[
+						{ text: '🐂 Быки', callback_data: 'cattle_type_BULLS' },
+						{ text: '🐄 Коровы', callback_data: 'cattle_type_COWS' },
+					],
+				],
+			},
+		})
+	}
+
+	async handleCattleTypeSelection(ctx: Context, cattleType: CattleType) {
+		try {
+			const userId = ctx.from.id
+			const state = this.getOfferState(userId)
+
+			if (!state) {
+				await ctx.reply('❌ Начните создание объявления заново')
+				return
+			}
+
+			state.cattleType = cattleType
+			state.inputType = 'breed'
+			this.updateOfferState(userId, state)
+
+			// Запрашиваем породу
+			await ctx.reply('🐮 Введите породу КРС:')
+		} catch (error) {
+			console.error('Ошибка при выборе типа КРС:', error)
+			await ctx.reply('❌ Произошла ошибка. Попробуйте еще раз.')
+		}
+	}
+
+	async handlePurposeSelection(ctx: Context, purpose: CattlePurpose) {
+		try {
+			const userId = ctx.from.id
+			const state = this.getOfferState(userId)
+
+			if (!state) {
+				await ctx.reply('❌ Начните создание объявления заново')
+				return
+			}
+
+			state.purpose = purpose
+			state.inputType = 'price_type'
+			this.updateOfferState(userId, state)
+
+			// Запрашиваем тип цены
+			await ctx.reply('💰 Выберите тип цены:', {
+				reply_markup: {
+					inline_keyboard: [
+						[
+							{ text: '💵 За голову', callback_data: 'price_type_PER_HEAD' },
+							{ text: '⚖️ За кг', callback_data: 'price_type_PER_KG' },
+						],
+					],
+				},
+			})
+		} catch (error) {
+			console.error('Ошибка при выборе назначения:', error)
+			await ctx.reply('❌ Произошла ошибка. Попробуйте еще раз.')
+		}
+	}
+
+	async handlePriceTypeSelection(ctx: Context, priceType: PriceType) {
+		try {
+			const userId = ctx.from.id
+			const state = this.getOfferState(userId)
+
+			if (!state) {
+				await ctx.reply('❌ Начните создание объявления заново')
+				return
+			}
+
+			state.priceType = priceType
+			state.inputType =
+				priceType === 'PER_HEAD' ? 'price_per_head' : 'price_per_kg'
+			this.updateOfferState(userId, state)
+
+			await ctx.reply(
+				priceType === 'PER_HEAD'
+					? '💵 Введите цену за голову (в рублях):'
+					: '⚖️ Введите цену за килограмм (в рублях):',
+			)
+		} catch (error) {
+			console.error('Ошибка при выборе типа цены:', error)
+			await ctx.reply('❌ Произошла ошибка. Попробуйте еще раз.')
+		}
+	}
+
+	async handleCustomsUnionSelection(ctx: Context, isCustomsUnion: boolean) {
+		try {
+			const userId = ctx.from.id
+			const state = this.getOfferState(userId)
+
+			if (!state) {
+				await ctx.reply('❌ Начните создание объявления заново')
+				return
+			}
+
+			state.customsUnion = isCustomsUnion
+			state.inputType = 'region' // Меняем на запрос региона вместо gut_discount
+			this.updateOfferState(userId, state)
+
+			// Запрашиваем регион
+			await ctx.reply('📍 Введите регион:')
+		} catch (error) {
+			console.error('Ошибка при выборе таможенного союза:', error)
+			await ctx.reply('❌ Произошла ошибка. Попробуйте еще раз.')
+		}
+	}
+
+	async handleGutDiscountSelection(ctx: Context, hasDiscount: boolean) {
+		try {
+			const userId = ctx.from.id
+			const state = this.getOfferState(userId)
+
+			if (!state) {
+				await ctx.reply('❌ Начните создание объявления заново')
+				return
+			}
+
+			if (hasDiscount) {
+				state.inputType = 'gkt_discount'
+				this.updateOfferState(userId, state)
+				await ctx.reply('Введите процент скидки на ЖКТ (число от 0 до 100):')
+			} else {
+				state.gktDiscount = 0
+				state.inputType = 'region'
+				this.updateOfferState(userId, state)
+				await ctx.reply('📍 Введите регион:')
+			}
+		} catch (error) {
+			console.error('Ошибка при выборе скидки ЖКТ:', error)
+			await ctx.reply('❌ Произошла ошибка. Попробуйте еще раз.')
+		}
+	}
+
+	async handleMyAds(ctx: Context) {
+		try {
+			const userId = ctx.from.id
+			const user = await this.prisma.user.findUnique({
+				where: { telegramId: userId.toString() },
+			})
+
+			if (!user) {
+				await ctx.reply('❌ Пользователь не найден')
+				return
+			}
+
+			// Получаем объявления пользователя
+			const offers = await this.prisma.offer.findMany({
+				where: { userId: user.id },
+				orderBy: { createdAt: 'desc' },
+				include: { images: true },
+			})
+
+			if (offers.length === 0) {
+				await ctx.reply('У вас пока нет объявлений', {
+					reply_markup: {
+						inline_keyboard: [
+							[{ text: '📝 Создать объявление', callback_data: 'create_ad' }],
+							[{ text: '« В главное меню', callback_data: 'menu' }],
+						],
+					},
+				})
+				return
+			}
+
+			// Отправляем список объявлений
+			await ctx.reply('📋 Ваши объявления:', {
+				reply_markup: {
+					inline_keyboard: [
+						[
+							{
+								text: '📝 Создать новое объявление',
+								callback_data: 'create_ad',
+							},
+						],
+					],
+				},
+			})
+
+			// Отправляем каждое объявление отдельным сообщением
+			for (const offer of offers) {
+				const statusText = {
+					PENDING: '🟡 На модерации',
+					APPROVED: '🟢 Активно',
+					REJECTED: '🔴 Отклонено',
+					ARCHIVED: '⚪️ В архиве',
+				}[offer.status]
+
+				const message = `
+${statusText}
+
+📋 <b>${offer.title}</b>
+🔢 Количество: ${offer.quantity} голов
+⚖️ Вес: ${offer.weight} кг
+💰 Цена: ${offer.priceType === 'PER_HEAD' ? `${offer.pricePerHead} ₽/гол` : `${offer.pricePerKg} ₽/кг`}
+📅 Создано: ${new Date(offer.createdAt).toLocaleDateString('ru-RU')}`
+
+				await ctx.reply(message, {
+					parse_mode: 'HTML',
+					reply_markup: {
+						inline_keyboard: [
+							[
+								{
+									text: '👁 Просмотреть',
+									callback_data: `view_offer_${offer.id}`,
+								},
+							],
+						],
+					},
+				})
+			}
+		} catch (error) {
+			console.error('Ошибка при получении объявлений:', error)
+			await ctx.reply('❌ Произошла ошибка при получении списка объявлений')
 		}
 	}
 }
