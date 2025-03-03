@@ -69,7 +69,7 @@ export class CreateOfferDto {
 	@IsNumber()
 	@Min(0)
 	@Max(100)
-	gutDiscount?: number
+	gktDiscount?: number
 
 	@ApiProperty({ description: 'Локация', required: false })
 	@IsOptional()

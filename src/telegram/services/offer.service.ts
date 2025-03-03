@@ -56,6 +56,13 @@ interface OfferState {
 	commentText?: string // Добавляем поле для текста комментария
 }
 
+interface OfferListResponse {
+	topOffers: string[] // Массив отформатированных сообщений
+	hasMore: boolean
+	currentPage: number
+	totalPages: number
+}
+
 @Injectable()
 export class TelegramOfferService {
 	private offerStates: Map<number, OfferState> = new Map()
@@ -390,10 +397,9 @@ export class TelegramOfferService {
 
 				case 'region':
 					state.region = text
-					state.inputType = 'full_address' // Меняем на запрос полного адреса вместо таможенного союза
+					state.inputType = 'full_address'
 					this.offerStates.set(userId, state)
 
-					// Запрашиваем полный адрес
 					await ctx.reply('📍 Введите полный адрес:')
 					break
 
@@ -1093,101 +1099,105 @@ ${
 		})
 	}
 
-	async handleBrowseOffers(ctx: Context, page: number = 1) {
-		const userId = ctx.from.id
-
-		// Проверяем авторизацию пользователя
-		const user = await this.prisma.user.findUnique({
-			where: { telegramId: userId.toString() },
-		})
-
-		if (!user || !user.isVerified) {
-			await ctx.reply('❌ Для просмотра объявлений необходимо авторизоваться', {
-				reply_markup: {
-					inline_keyboard: [
-						[
-							{ text: '🔑 Войти', callback_data: 'login' },
-							{ text: '📝 Регистрация', callback_data: 'register' },
-						],
-					],
+	async handleBrowseOffers(ctx: Context, page = 1) {
+		try {
+			const offers = await this.prisma.offer.findMany({
+				where: { status: 'APPROVED' },
+				orderBy: [{ user: { status: 'desc' } }, { createdAt: 'desc' }],
+				skip: (page - 1) * 10,
+				take: 10,
+				include: {
+					user: true,
 				},
 			})
-			return
-		}
 
-		const ITEMS_PER_PAGE = 10
-		const skip = (page - 1) * ITEMS_PER_PAGE
+			if (!offers || offers.length === 0) {
+				await ctx.reply('🔍 Объявления не найдены')
+				return
+			}
 
-		const totalOffers = await this.prisma.offer.count({
-			where: {
-				status: 'APPROVED' as const,
-			},
-		})
-
-		const totalPages = Math.ceil(totalOffers / ITEMS_PER_PAGE)
-
-		const offers = await this.prisma.offer.findMany({
-			where: {
-				status: 'APPROVED' as const,
-			},
-			include: {
-				images: true,
-			},
-			orderBy: {
-				createdAt: 'desc',
-			},
-			take: ITEMS_PER_PAGE,
-			skip: skip,
-		})
-
-		if (!offers.length) {
-			await ctx.reply('📭 Пока нет активных объявлений', {
-				reply_markup: {
-					inline_keyboard: [[{ text: '« Меню', callback_data: 'menu' }]],
-				},
+			const totalOffers = await this.prisma.offer.count({
+				where: { status: 'APPROVED' },
 			})
-			return
-		}
 
-		// Создаем кнопки для каждого предложения
-		const offerButtons = offers.map(offer => [
-			{
-				text: `${offer.price.toLocaleString('ru-RU')}₽ - ${offer.breed || 'КРС'}`,
-				callback_data: `view_offer_${offer.id}`,
-			},
-		])
+			const totalPages = Math.ceil(totalOffers / 10)
 
-		// Добавляем кнопки пагинации
-		const paginationButtons = []
-		if (totalPages > 1) {
-			const buttons = []
-			if (page > 1) {
-				buttons.push({
-					text: '« Предыдущая',
-					callback_data: `browse_offers_${page - 1}`,
-				})
-			}
-			if (page < totalPages) {
-				buttons.push({
-					text: 'Следующая »',
-					callback_data: `browse_offers_${page + 1}`,
-				})
-			}
-			if (buttons.length > 0) {
-				paginationButtons.push(buttons)
-			}
-		}
+			// Формируем кнопки для каждого объявления
+			const keyboard = [
+				...offers.map(offer => {
+					const statusIcon = {
+						SUPER_PREMIUM: '💎',
+						PREMIUM: '⭐️',
+						REGULAR: '',
+					}[offer.user?.status || 'REGULAR']
 
-		await ctx.reply('📋 <b>Выберите предложение:</b>', {
-			parse_mode: 'HTML',
-			reply_markup: {
-				inline_keyboard: [
-					...offerButtons,
-					...paginationButtons,
-					[{ text: '« Меню', callback_data: 'menu' }],
+					const cattleType =
+						{
+							CALVES: '🐮 Телята',
+							BULL_CALVES: '🐂 Бычки',
+							HEIFERS: '🐄 Телки',
+							BREEDING_HEIFERS: '🐄 Нетели',
+							BULLS: '🐂 Быки',
+							COWS: '🐄 Коровы',
+						}[offer.cattleType] || offer.cattleType
+
+					const price =
+						offer.priceType === 'PER_HEAD'
+							? `${offer.pricePerHead?.toLocaleString()} ₽/гол`
+							: `${offer.pricePerKg?.toLocaleString()} ₽/кг`
+
+					return [
+						{
+							text: `${statusIcon} ${cattleType} ${offer.breed || ''} - ${price}`,
+							callback_data: `view_offer_${offer.id}`,
+						},
+					]
+				}),
+				[
+					// Кнопки навигации
+					...(page > 1
+						? [
+								{
+									text: '⬅️ Назад',
+									callback_data: `browse_offers_${page - 1}`,
+								},
+							]
+						: []),
+					...(page < totalPages
+						? [
+								{
+									text: 'Вперед ➡️',
+									callback_data: `browse_offers_${page + 1}`,
+								},
+							]
+						: []),
 				],
-			},
-		})
+				[{ text: '« Меню', callback_data: 'menu' }],
+			]
+
+			const message = `📋 Список объявлений (страница ${page} из ${totalPages}):`
+
+			// Если это callback query, обновляем существующее сообщение
+			if ('callback_query' in ctx.update) {
+				await ctx.editMessageText(message, {
+					parse_mode: 'HTML',
+					reply_markup: {
+						inline_keyboard: keyboard,
+					},
+				})
+			} else {
+				// Иначе отправляем новое сообщение
+				await ctx.reply(message, {
+					parse_mode: 'HTML',
+					reply_markup: {
+						inline_keyboard: keyboard,
+					},
+				})
+			}
+		} catch (error) {
+			console.error('Ошибка при просмотре объявлений:', error)
+			await ctx.reply('❌ Произошла ошибка при загрузке объявлений')
+		}
 	}
 
 	// Метод для получения только региона
@@ -1389,139 +1399,100 @@ ${
 		}
 	}
 
-	async handleViewOffer(ctx: Context, offerId?: string) {
+	async handleViewOffer(ctx: Context, offerId: string) {
 		try {
-			await ctx.answerCbQuery()
-
-			// Если offerId не передан, извлекаем его из callback_data
-			if (!offerId) {
-				//@ts-ignore
-				offerId = ctx.callbackQuery.data.replace('view_offer_', '')
-			}
-
-			// Получаем объявление из базы данных со всеми связанными данными
 			const offer = await this.prisma.offer.findUnique({
 				where: { id: offerId },
 				include: {
+					user: true,
 					images: true,
-					user: {
-						select: {
-							name: true,
-							phone: true,
-							mercuryNumber: true,
-						},
-					},
 				},
 			})
 
 			if (!offer) {
-				await ctx.reply('❌ Объявление не найдено или было удалено')
+				await ctx.reply('❌ Объявление не найдено')
 				return
 			}
 
-			// Формируем сообщение с данными объявления
-			let statusText = ''
-			switch (offer.status) {
-				case 'APPROVED':
-					statusText = '🟢 Активно'
-					break
-				case 'PENDING':
-					statusText = '🟡 На модерации'
-					break
-				case 'ARCHIVED':
-					statusText = '⚪ Архивировано'
-					break
-				case 'REJECTED':
-					statusText = '🔴 Отклонено'
-					break
-			}
+			const statusIcon = {
+				SUPER_PREMIUM: '💎',
+				PREMIUM: '⭐️',
+				REGULAR: '',
+			}[offer.offerStatus || 'REGULAR']
 
-			const cattleTypeText = {
-				CALVES: '🐮 Телята',
-				BULL_CALVES: '🐂 Бычки',
-				HEIFERS: '🐄 Телки',
-				BREEDING_HEIFERS: '🐄 Нетели',
-				BULLS: '🐂 Быки',
-				COWS: '🐄 Коровы',
-			}[offer.cattleType]
+			const message = `
+🟢 Активно
 
-			const purposeText = {
-				COMMERCIAL: '💼 Коммерческое',
-				BREEDING: '🧬 Племенное',
-			}[offer.purpose]
+${statusIcon} <b>${offer.title}</b>
 
-			const offerMessage = `
-${statusText}
-
-📋 <b>${offer.title}</b>
-
-${cattleTypeText} - ${offer.breed || 'Порода не указана'}
+${offer.cattleType} - ${offer.breed}
 🔢 Количество: ${offer.quantity} голов
 ⚖️ Вес: ${offer.weight} кг
 🌱 Возраст: ${offer.age} мес.
-🎯 Назначение: ${purposeText}
-💰 Цена: ${offer.priceType === 'PER_HEAD' ? `${offer.pricePerHead} ₽/гол` : `${offer.pricePerKg} ₽/кг`}
+💰 Цена: ${
+				offer.priceType === 'PER_HEAD'
+					? `${offer.pricePerHead?.toLocaleString()} ₽/гол`
+					: `${offer.pricePerKg?.toLocaleString()} ₽/кг`
+			}
 📍 Регион: ${offer.region || 'Не указан'}
-${offer.description ? `\n📝 Описание: ${offer.description}` : ''}
-${offer.gktDiscount > 0 ? `\n🎯 Скидка ЖКТ: ${offer.gktDiscount}%` : ''}
+
+📝 Описание: ${offer.description}
+${offer.gktDiscount ? `\n🎯 Скидка ЖКТ: ${offer.gktDiscount}%` : ''}
 ${offer.customsUnion ? '\n🌍 Для стран ТС' : ''}
 
 📅 Создано: ${new Date(offer.createdAt).toLocaleDateString('ru-RU')}`
 
-			// Определяем кнопки в зависимости от роли пользователя
-			const userId = ctx.from.id
-			const user = await this.prisma.user.findUnique({
-				where: { telegramId: userId.toString() },
-			})
-
-			const buttons = []
-
-			// Добавляем кнопку запроса контактов для покупателей
-			if (user && user.role === 'BUYER') {
-				buttons.push([
-					{
-						text: '📞 Запросить контакты',
-						callback_data: `request_contacts_${offerId}`,
-					},
-				])
-
-				// Добавляем кнопки AI-вопроса и расчета цены для покупателей
-				buttons.push([
-					{
-						text: '🤖 Спросить AI',
-						callback_data: `ask_ai_${offerId}`,
-					},
-					{
-						text: '🧮 Рассчитать цену',
-						callback_data: `calculate_price_${offerId}`,
-					},
-				])
-			}
-
-			// Добавляем кнопку возврата
-			buttons.push([{ text: '« Назад', callback_data: 'browse_offers' }])
-
-			// Отправляем изображения, если они есть
+			// Если есть изображения, отправляем первое изображение с текстом
 			if (offer.images && offer.images.length > 0) {
-				// Отправляем первое изображение с текстом и кнопками
-				await ctx.replyWithPhoto(offer.images[0].url, {
-					caption: offerMessage,
-					parse_mode: 'HTML',
-					reply_markup: {
-						inline_keyboard: buttons,
-					},
-				})
-
-				// Отправляем остальные изображения, если их больше одного
-				for (let i = 1; i < Math.min(offer.images.length, 5); i++) {
-					await ctx.replyWithPhoto(offer.images[i].url)
+				// Проверяем, что URL изображения действительный
+				const imageUrl = offer.images[0].url
+				if (!imageUrl.startsWith('http')) {
+					// Если URL недействительный, отправляем только текст
+					await ctx.reply(message, {
+						parse_mode: 'HTML',
+						reply_markup: {
+							inline_keyboard: [
+								[
+									{
+										text: '📞 Запросить контакты',
+										callback_data: `request_contacts_${offer.id}`,
+									},
+								],
+								[{ text: '« Назад', callback_data: 'browse_offers_1' }],
+							],
+						},
+					})
+				} else {
+					await ctx.replyWithPhoto(imageUrl, {
+						caption: message,
+						parse_mode: 'HTML',
+						reply_markup: {
+							inline_keyboard: [
+								[
+									{
+										text: '📞 Запросить контакты',
+										callback_data: `request_contacts_${offer.id}`,
+									},
+								],
+								[{ text: '« Назад', callback_data: 'browse_offers_1' }],
+							],
+						},
+					})
 				}
 			} else {
-				// Если нет изображений, отправляем только текст
-				await ctx.reply(offerMessage, {
+				// Если изображений нет, отправляем только текст
+				await ctx.reply(message, {
 					parse_mode: 'HTML',
 					reply_markup: {
-						inline_keyboard: buttons,
+						inline_keyboard: [
+							[
+								{
+									text: '📞 Запросить контакты',
+									callback_data: `request_contacts_${offer.id}`,
+								},
+							],
+							[{ text: '« Назад', callback_data: 'browse_offers_1' }],
+						],
 					},
 				})
 			}
@@ -3297,6 +3268,17 @@ ${statusText}
 									callback_data: `view_offer_${offer.id}`,
 								},
 							],
+							[
+								{
+									text: '✏️ Редактировать',
+									callback_data: `edit_offer_${offer.id}`,
+								},
+								{
+									text: '❌ Удалить',
+									callback_data: `delete_offer_${offer.id}`,
+								},
+							],
+							[{ text: '« Меню', callback_data: 'menu' }],
 						],
 					},
 				})
@@ -3305,5 +3287,211 @@ ${statusText}
 			console.error('Ошибка при получении объявлений:', error)
 			await ctx.reply('❌ Произошла ошибка при получении списка объявлений')
 		}
+	}
+
+	async getRecommendedOffers(userId: string) {
+		const user = await this.prisma.user.findUnique({
+			where: { id: userId },
+		})
+
+		// Получаем объявления с учетом статуса и рейтинга
+		const offers = await this.prisma.offer.findMany({
+			where: {
+				status: 'APPROVED',
+			},
+			orderBy: [
+				{ user: { status: 'desc' } }, // Сначала SUPER_PREMIUM, потом PREMIUM
+				{ aiScore: 'desc' }, // Затем по рейтингу AI
+				{ createdAt: 'desc' }, // И по дате создания
+			],
+			include: {
+				user: true,
+				images: true,
+			},
+			take: 10, // Берем топ-10 объявлений
+		})
+
+		// Форматируем объявления для отображения
+		const formattedOffers = offers.map(offer => {
+			const statusIcon = {
+				SUPER_PREMIUM: '💎', // Алмаз для SUPER_PREMIUM
+				PREMIUM: '⭐️', // Звезда для PREMIUM
+				REGULAR: '', // Ничего для обычных
+			}[offer.user.status]
+
+			return `${statusIcon} <b>${offer.title}</b>
+🔢 Количество: ${offer.quantity} голов
+⚖️ Вес: ${offer.weight} кг
+💰 Цена: ${offer.priceType === 'PER_HEAD' ? `${offer.pricePerHead} ₽/гол` : `${offer.pricePerKg} ₽/кг`}
+📍 Регион: ${offer.region || 'Не указан'}
+${offer.gktDiscount ? `\n🎯 Скидка ЖКТ: ${offer.gktDiscount}%` : ''}
+${offer.customsUnion ? '\n🌍 Для стран ТС' : ''}`
+		})
+
+		return formattedOffers
+	}
+
+	async getOffersList(ctx: Context, page = 1): Promise<OfferListResponse> {
+		const userId = ctx.from.id
+		const ITEMS_PER_PAGE = 10
+
+		// Получаем последний запрос пользователя
+		const lastRequest = await this.prisma.request.findFirst({
+			where: { userId: userId.toString() },
+			orderBy: { createdAt: 'desc' },
+		})
+
+		// Формируем контекст пользователя
+		const userContext = {
+			region: lastRequest?.region?.toLowerCase() || '',
+			price: lastRequest?.price || 0,
+			cattleType: lastRequest?.cattleType || '',
+			breed: lastRequest?.breed || '',
+		}
+
+		// Получаем объявления с базовой фильтрацией
+		let offers = await this.prisma.offer.findMany({
+			where: {
+				status: 'APPROVED',
+			},
+			include: {
+				images: true,
+				user: true,
+			},
+			orderBy: { createdAt: 'desc' },
+		})
+
+		// Предварительная сортировка на бэкенде
+		offers = offers
+			.filter(offer => {
+				const offerRegion = (offer.region || '').toLowerCase()
+				const requestRegion = userContext.region.toLowerCase()
+				return !requestRegion || offerRegion.includes(requestRegion)
+			})
+			.sort((a, b) => {
+				const priceA =
+					a.priceType === 'PER_HEAD' ? a.pricePerHead : a.pricePerKg
+				const priceB =
+					b.priceType === 'PER_HEAD' ? b.pricePerHead : b.pricePerKg
+				const diffA = Math.abs(priceA - userContext.price)
+				const diffB = Math.abs(priceB - userContext.price)
+				return diffA - diffB
+			})
+
+		// Берем топ-20 или дополняем последними
+		let offersForAnalysis = offers.slice(0, 20)
+		if (offersForAnalysis.length < 20) {
+			const remaining = await this.prisma.offer.findMany({
+				where: {
+					status: 'APPROVED',
+					id: { notIn: offersForAnalysis.map(o => o.id) },
+				},
+				take: 20 - offersForAnalysis.length,
+				orderBy: { createdAt: 'desc' },
+				include: {
+					// Добавляем include
+					images: true,
+					user: true,
+				},
+			})
+			offersForAnalysis = [...offersForAnalysis, ...remaining]
+		}
+
+		// Отправляем на анализ в Coze
+		const analysis = await this.cozeService.generateResponse(
+			JSON.stringify({
+				userContext,
+				offers: offersForAnalysis.map(o => ({
+					id: o.id,
+					title: o.title,
+					description: o.description,
+					price: o.priceType === 'PER_HEAD' ? o.pricePerHead : o.pricePerKg,
+					priceType: o.priceType,
+					quantity: o.quantity,
+					weight: o.weight,
+					age: o.age,
+					breed: o.breed,
+					region: o.region,
+					imagesCount: o.images.length,
+					gktDiscount: o.gktDiscount,
+					customsUnion: o.customsUnion,
+				})),
+			}),
+			'Проанализируй объявления и верни топ-10 с учетом контекста пользователя',
+		)
+
+		try {
+			const result = JSON.parse(analysis)
+			const analyzedOffers = await Promise.all(
+				result.topOffers.map(async item => {
+					const offer = await this.prisma.offer.findUnique({
+						where: { id: item.id },
+						include: { user: true },
+					})
+					return {
+						...offer,
+						user: {
+							...offer.user,
+							status: item.status,
+						},
+					}
+				}),
+			)
+
+			// Форматируем объявления
+			const formattedOffers = analyzedOffers.map(offer =>
+				this.formatOffer(offer),
+			)
+
+			// Получаем обычные объявления с пагинацией
+			const regularOffers = await this.prisma.offer.findMany({
+				where: {
+					status: 'APPROVED',
+					id: { notIn: analyzedOffers.map(o => o.id) },
+				},
+				orderBy: { createdAt: 'desc' },
+				skip: (page - 1) * ITEMS_PER_PAGE,
+				take: ITEMS_PER_PAGE,
+				include: { user: true },
+			})
+
+			const totalRegularOffers = await this.prisma.offer.count({
+				where: {
+					status: 'APPROVED',
+					id: { notIn: analyzedOffers.map(o => o.id) },
+				},
+			})
+
+			return {
+				topOffers: [...formattedOffers],
+				hasMore: page * ITEMS_PER_PAGE < totalRegularOffers,
+				currentPage: page,
+				totalPages: Math.ceil(totalRegularOffers / ITEMS_PER_PAGE),
+			}
+		} catch (error) {
+			console.error('Ошибка при обработке результатов анализа:', error)
+			return {
+				topOffers: [],
+				hasMore: false,
+				currentPage: page,
+				totalPages: 0,
+			}
+		}
+	}
+
+	private formatOffer(offer: any): string {
+		const statusIcon = {
+			SUPER_PREMIUM: '💎',
+			PREMIUM: '⭐️',
+			REGULAR: '',
+		}[offer.user?.status || 'REGULAR']
+
+		return `${statusIcon} <b>${offer.title}</b>
+🔢 Количество: ${offer.quantity} голов
+⚖️ Вес: ${offer.weight} кг
+💰 Цена: ${offer.priceType === 'PER_HEAD' ? `${offer.pricePerHead} ₽/гол` : `${offer.pricePerKg} ₽/кг`}
+📍 Регион: ${offer.region || 'Не указан'}
+${offer.gktDiscount ? `\n🎯 Скидка ЖКТ: ${offer.gktDiscount}%` : ''}
+${offer.customsUnion ? '\n🌍 Для стран ТС' : ''}`
 	}
 }

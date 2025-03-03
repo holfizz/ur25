@@ -291,4 +291,13 @@ ${
 		const userType = callbackQuery.data.split('_')[2]
 		await this.authService.handleUserTypeSelection(ctx, userType)
 	}
+
+	async sendMessage(chatId: string, message: string) {
+		try {
+			// Используем напрямую bot.telegram для отправки сообщения
+			await this.bot.telegram.sendMessage(chatId, message)
+		} catch (error) {
+			console.error('Error sending telegram message:', error)
+		}
+	}
 }

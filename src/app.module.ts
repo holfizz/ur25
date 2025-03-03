@@ -9,15 +9,7 @@ import { TelegramModule } from './telegram/telegram.module'
 import { UserModule } from './user/user.module'
 
 @Module({
-	imports: [
-		ConfigModule.forRoot({
-			isGlobal: true,
-			envFilePath: '.env',
-		}),
-		AuthModule,
-		UserModule,
-		TelegramModule,
-	],
+	imports: [ConfigModule.forRoot(), AuthModule, UserModule, TelegramModule],
 	providers: [
 		PrismaService,
 		{

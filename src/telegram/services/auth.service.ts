@@ -36,11 +36,16 @@ interface AuthState {
 	buyerType?: string
 }
 
+interface LoginState {
+	email: string | null
+	password: string | null
+	step: 'email' | 'password'
+}
+
 @Injectable()
 export class TelegramAuthService {
 	private registrationStates: Map<number, RegistrationState> = new Map()
-	private loginStates: Map<number, { email?: string; password?: string }> =
-		new Map()
+	private loginStates: Map<number, LoginState> = new Map()
 	private authStates = new Map<number, AuthState>()
 
 	constructor(
@@ -549,11 +554,17 @@ export class TelegramAuthService {
 		return this.loginStates.get(userId)
 	}
 
-	public setLoginState(
-		userId: number,
-		state: { email?: string; password?: string },
-	) {
-		this.loginStates.set(userId, state)
+	public setLoginState(userId: number, state: Partial<LoginState>) {
+		const currentState = this.loginStates.get(userId) || {
+			email: null,
+			password: null,
+			step: 'email',
+		}
+
+		this.loginStates.set(userId, {
+			...currentState,
+			...state,
+		})
 	}
 
 	public deleteLoginState(userId: number) {
@@ -789,94 +800,91 @@ export class TelegramAuthService {
 	}
 
 	async handleLoginInput(ctx: Context, text: string) {
-		const userId = ctx.from.id
-		const loginState = this.loginStates.get(userId)
+		try {
+			const userId = ctx.from.id
+			const loginState = this.getLoginState(userId)
 
-		if (!loginState) {
-			await ctx.reply('❌ Пожалуйста, начните процесс входа заново')
-			return
-		}
+			if (!loginState) return
 
-		// Если email еще не введен
-		if (!loginState.email) {
-			if (!this.validateEmail(text)) {
-				await ctx.reply(
-					'❌ Неверный формат email\n\n📝 Пример: example@mail.com',
-				)
+			if (loginState.step === 'email') {
+				if (!this.validateEmail(text)) {
+					await ctx.reply(
+						'❌ Неверный формат email\n\n📝 Пример: example@mail.com',
+					)
+					return
+				}
+
+				const user = await this.prisma.user.findUnique({
+					where: { email: text },
+				})
+
+				if (!user) {
+					await ctx.reply('❌ Пользователь с таким email не найден')
+					this.clearLoginState(userId)
+					return
+				}
+
+				this.setLoginState(userId, { email: text, step: 'password' })
+				await ctx.reply('🔑 Введите пароль:')
 				return
 			}
 
-			// Проверяем существование пользователя
-			const user = await this.prisma.user.findUnique({
-				where: { email: text },
-			})
+			if (loginState.step === 'password') {
+				// Проверяем пароль
+				const user = await this.prisma.user.findUnique({
+					where: { email: loginState.email },
+				})
 
-			if (!user) {
-				await ctx.reply('❌ Пользователь с таким email не найден')
-				this.loginStates.delete(userId)
-				return
+				if (!user) {
+					await ctx.reply('❌ Пользователь не найден')
+					this.clearLoginState(userId)
+					return
+				}
+
+				const isPasswordValid = await bcrypt.compare(text, user.password)
+
+				if (!isPasswordValid) {
+					await ctx.reply('❌ Неверный пароль')
+					this.clearLoginState(userId)
+					return
+				}
+
+				// Обновляем telegramId, только если пользователь еще не привязан к другому аккаунту
+				const existingUser = await this.prisma.user.findUnique({
+					where: { telegramId: userId.toString() },
+				})
+
+				if (existingUser && existingUser.id !== user.id) {
+					// Если текущий пользователь уже привязан к другому аккаунту, отвязываем его
+					await this.prisma.user.update({
+						where: { id: existingUser.id },
+						data: { telegramId: null },
+					})
+				}
+
+				// Привязываем новый telegramId
+				await this.prisma.user.update({
+					where: { id: user.id },
+					data: { telegramId: userId.toString() },
+				})
+
+				await this.showMainMenu(ctx) // Показываем меню сразу после успешного входа
+				this.clearLoginState(userId)
 			}
-
-			// Сохраняем email и запрашиваем пароль
-			loginState.email = text
-			this.loginStates.set(userId, loginState)
-			await ctx.reply('🔑 Введите пароль:')
-			return
-		}
-
-		// Если пароль еще не введен
-		if (!loginState.password) {
-			// Проверяем пароль
-			const user = await this.prisma.user.findUnique({
-				where: { email: loginState.email },
-			})
-
-			if (!user) {
-				await ctx.reply(
-					'❌ Произошла ошибка. Пожалуйста, попробуйте войти заново',
-				)
-				this.loginStates.delete(userId)
-				return
-			}
-
-			const isPasswordValid = await bcrypt.compare(text, user.password)
-
-			if (!isPasswordValid) {
-				await ctx.reply('❌ Неверный пароль')
-				return
-			}
-
-			if (!user.isVerified) {
-				await ctx.reply(
-					'⏳ Ваша учетная запись находится на модерации.\n' +
-						'Пожалуйста, дождитесь подтверждения администратором.\n\n' +
-						'Нажмите /start для возврата в главное меню.',
-				)
-				this.loginStates.delete(userId)
-				return
-			}
-
-			// Обновляем telegramId пользователя
-			await this.prisma.user.update({
-				where: { id: user.id },
-				data: { telegramId: userId.toString() },
-			})
-
-			// Очищаем состояние входа
-			this.loginStates.delete(userId)
-
-			// Отправляем сообщение об успешном входе
-			await ctx.reply('✅ Вход выполнен успешно!', {
-				reply_markup: {
-					inline_keyboard: [[{ text: '📱 Меню', callback_data: 'menu' }]],
-				},
-			})
+		} catch (error) {
+			console.error('Ошибка при обработке входа:', error)
+			await ctx.reply('❌ Произошла ошибка при входе')
+			this.clearLoginState(ctx.from.id)
 		}
 	}
 
 	async initLoginState(userId: number) {
 		console.log('Инициализация состояния входа для пользователя:', userId)
-		this.loginStates.set(userId, { email: null, password: null })
+		this.loginStates.set(userId, {
+			email: null,
+			password: null,
+			step: 'email', // Начинаем с ввода email
+		})
 	}
 
 	async notifyAdminsAboutRegistration(registrationRequest: any) {
@@ -1003,5 +1011,17 @@ export class TelegramAuthService {
 	// Добавим метод для обновления состояния регистрации
 	async updateRegistrationState(userId: number, state: RegistrationState) {
 		this.registrationStates.set(userId, state)
+	}
+
+	private clearLoginState(userId: number) {
+		this.loginStates.delete(userId)
+	}
+
+	private async showMainMenu(ctx: Context) {
+		await ctx.reply('✅ Вход выполнен успешно!', {
+			reply_markup: {
+				inline_keyboard: [[{ text: '📱 Меню', callback_data: 'menu' }]],
+			},
+		})
 	}
 }

@@ -368,9 +368,10 @@ export class TelegramUpdate {
 				return
 			}
 
+			// Обработка просмотра оффера
 			if (callbackQuery.data.startsWith('view_offer_')) {
 				const offerId = callbackQuery.data.replace('view_offer_', '')
-				await this.offerService.handleViewOffer(ctx) // Убираем второй аргумент offerId
+				await this.offerService.handleViewOffer(ctx, offerId) // Добавляем offerId
 				return
 			}
 
@@ -443,7 +444,12 @@ export class TelegramUpdate {
 					break
 
 				case 'browse_offers':
-					await this.offerService.handleBrowseOffers(ctx, 1)
+				case callbackQuery.data.match(/^browse_offers_\d+$/)?.[0]: // Добавляем обработку пагинации
+					const page =
+						callbackQuery.data === 'browse_offers'
+							? 1
+							: parseInt(callbackQuery.data.replace('browse_offers_', ''))
+					await this.offerService.handleBrowseOffers(ctx, page)
 					break
 
 				case 'approve_comment':
@@ -2555,6 +2561,50 @@ ${offer.customsUnion ? '\n🌍 Для стран ТС' : ''}
 		} catch (error) {
 			console.error('Ошибка при расчете цены:', error)
 			await ctx.reply('❌ Произошла ошибка при обработке запроса')
+		}
+	}
+
+	@Action(/^page_(\d+)$/)
+	async handlePagination(@Ctx() ctx: Context) {
+		try {
+			const callbackQuery = ctx.callbackQuery as any // временное решение
+			const match = callbackQuery.data.match(/^page_(\d+)$/)
+			if (!match) return
+
+			const page = parseInt(match[1])
+			const offers = await this.offerService.getOffersList(ctx, page)
+
+			// Отправляем список объявлений
+			await ctx.editMessageText('📋 Список объявлений:', {
+				parse_mode: 'HTML',
+				reply_markup: {
+					inline_keyboard: [
+						...offers.topOffers.map(offer => [
+							{
+								text: '👁 Просмотреть',
+								callback_data: `view_offer_${offer}`,
+							},
+						]),
+						[
+							offers.currentPage > 1
+								? {
+										text: '⬅️ Назад',
+										callback_data: `page_${offers.currentPage - 1}`,
+									}
+								: null,
+							offers.hasMore
+								? {
+										text: 'Вперед ➡️',
+										callback_data: `page_${offers.currentPage + 1}`,
+									}
+								: null,
+						].filter(Boolean),
+					],
+				},
+			})
+		} catch (error) {
+			console.error('Ошибка при обработке пагинации:', error)
+			await ctx.reply('❌ Произошла ошибка при загрузке объявлений')
 		}
 	}
 }

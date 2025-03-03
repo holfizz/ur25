@@ -3,6 +3,7 @@ import {
 	Controller,
 	Get,
 	HttpCode,
+	Param,
 	Put,
 	UsePipes,
 	ValidationPipe,
@@ -28,5 +29,20 @@ export class UserController {
 	@Put('profile')
 	async getNewToken(@CurrentUser('id') id: string, @Body() dto: UserDto) {
 		return this.userService.updateProfile(id, dto)
+	}
+
+	@Get('pending')
+	@Auth('ADMIN')
+	async getPendingUsers() {
+		return this.userService.getPendingUsers()
+	}
+
+	@Put('verify/:id')
+	@Auth('ADMIN')
+	async verifyUser(
+		@Param('id') id: string,
+		@Body() { status }: { status: 'APPROVED' | 'REJECTED' },
+	) {
+		return this.userService.verifyUser(id, status)
 	}
 }

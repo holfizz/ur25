@@ -13,16 +13,15 @@ export class CozeService {
 			const response = await axios.post(
 				this.apiUrl,
 				{
-					bot_id: this.configService.get('COZE_BOT_ID'),
-					user: 'user',
-					query: question,
-					stream: false,
-					chat_history: [
+					bot_id: this.configService.get('COZE_ANALYZER_BOT_ID'),
+					messages: [
 						{
-							role: 'assistant',
-							type: 'context',
+							role: 'user',
 							content: context,
-							content_type: 'text',
+						},
+						{
+							role: 'user',
+							content: question,
 						},
 					],
 				},
@@ -30,22 +29,14 @@ export class CozeService {
 					headers: {
 						Authorization: `Bearer ${this.configService.get('COZE_TOKEN')}`,
 						'Content-Type': 'application/json',
-						Accept: '*/*',
-						Connection: 'keep-alive',
 					},
 				},
 			)
 
-			// Получаем ответ из сообщений
-			const messages = response.data.messages
-			const answer = messages.find(
-				m => m.type === 'answer' && m.role === 'assistant',
-			)
-
-			return answer ? answer.content : 'Не удалось получить ответ от AI'
+			return response.data.messages[response.data.messages.length - 1].content
 		} catch (error) {
 			console.error('Ошибка при запросе к Coze API:', error)
-			return 'Произошла ошибка при обработке запроса'
+			return ''
 		}
 	}
 }

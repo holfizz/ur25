@@ -63,10 +63,15 @@ enum UserStatus {
 }
 
 enum OfferStatus {
-  PENDING // На модерации
-  APPROVED // Одобрено
-  REJECTED // Отклонено
-  ARCHIVED // В архиве
+  REGULAR
+  PREMIUM
+  SUPER_PREMIUM
+}
+
+enum VerificationStatus {
+  PENDING
+  APPROVED
+  REJECTED
 }
 
 model User {
@@ -95,7 +100,8 @@ model User {
   messages         Message[]     @relation("UserMessages")
   chatMessages     ChatMessage[]
 
-  isVerified Boolean @default(false)
+  isVerified         Boolean            @default(false)
+  verificationStatus VerificationStatus @default(PENDING)
 
   // Добавляем новые поля
   inn           String? // ИНН
@@ -111,7 +117,11 @@ model User {
   dealsAsBuyer  Deal[] @relation("DealBuyer")
   dealsAsSeller Deal[] @relation("DealSeller")
 
-  status UserStatus @default(REGULAR)
+  status         String    @default("REGULAR") // REGULAR, PREMIUM, SUPER_PREMIUM
+  rating         Float     @default(0)
+  lastAiAnalysis DateTime?
+
+  lastLoginAt DateTime?
 
   @@map("users")
 }
@@ -140,49 +150,53 @@ model Request {
   isExport   Boolean   @default(false)
   isBreeding Boolean   @default(false)
 
+  cattleType String?
+
   @@map("requests")
 }
 
 model Offer {
-  id        String   @id @default(uuid())
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
-
+  id                 String        @id @default(uuid())
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
   title              String
-  description        String?
+  description        String
   quantity           Int
-  weight             Int?
-  age                Int?
+  weight             Float
+  age                Int
+  breed              String?
+  region             String?
+  location           String?
   price              Float?
-  priceType          PriceType   @default(PER_HEAD)
+  cattleType         CattleType
+  priceType          PriceType
   pricePerKg         Float?
   pricePerHead       Float?
-  gutDiscount        Float?      @default(0) // Скидка на ливер (%)
-  location           String?
-  region             String?
+  purpose            CattlePurpose @default(COMMERCIAL)
   fullAddress        String?
-  customsUnion       Boolean?    @default(false) // Таможенный союз
-  status             OfferStatus @default(PENDING)
-  userId             String
-  user               User        @relation(fields: [userId], references: [id])
-  images             Image[]
-  videoUrl           String?
-  lastActualityCheck DateTime    @default(now())
+  customsUnion       Boolean?      @default(false)
+  status             String        @default("APPROVED")
+  offerStatus        OfferStatus   @default(REGULAR)
+  gktDiscount        Int           @default(0)
+  quality            Float         @default(0)
+  aiScore            Float         @default(0)
+  views              Int           @default(0)
+  lastAnalyzed       DateTime?
+  lastActualityCheck DateTime      @default(now())
 
-  // Новые поля для КРС
-  breed         String?
-  cattleType    CattleType?
-  purpose       CattlePurpose?
+  // Дополнительные поля
+  images        Image[]
+  videoUrl      String?
   mercuryNumber String?
   contactPerson String?
   contactPhone  String?
 
-  // Добавьте эти связи
+  // Связи
+  userId          String
+  user            User             @relation(fields: [userId], references: [id])
+  matches         Match[]
   contactRequests ContactRequest[]
   deals           Deal[]
-  matches         Match[]
-
-  gktDiscount Int @default(0) // Скидка на ЖКТ в процентах
 
   @@map("offers")
 }
@@ -318,4 +332,11 @@ model Deal {
   quantity  Int
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+model SystemSettings {
+  key   String @id
+  value String
+
+  @@map("system_settings")
 }
