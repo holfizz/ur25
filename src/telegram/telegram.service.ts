@@ -270,7 +270,7 @@ ${
 			await this.authService.handleRoleSelection(ctx, role)
 		} else if (callbackData.startsWith('type_')) {
 			const userType = callbackData.split('_')[1]
-			await this.authService.handleSupplierTypeSelection(ctx, userType)
+			await this.authService.handleUserTypeSelection(ctx, userType)
 		} else if (callbackData === 'skip_mercury') {
 			await this.authService.handleSkipMercury(ctx)
 		}

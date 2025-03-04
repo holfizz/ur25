@@ -1,4 +1,4 @@
-import { CattlePurpose, CattleType, PriceType } from '@prisma/client'
+import { CattlePurpose, CattleType, Equipment, PriceType } from '@prisma/client'
 import { Action, Ctx, On, Start, Update } from 'nestjs-telegraf'
 import { Context } from 'telegraf'
 import { CallbackQuery } from 'telegraf/typings/core/types/typegram'
@@ -318,325 +318,589 @@ export class TelegramUpdate {
 
 	@On('callback_query')
 	async handleCallback(@Ctx() ctx: Context) {
-		try {
-			const callbackQuery = ctx.callbackQuery as any // временно используем any
-			const userId = ctx.from.id
+		const callbackQuery = ctx.callbackQuery as any
+		const userId = ctx.from.id
+		const action = callbackQuery.data
 
-			if (!callbackQuery.data) return
-
-			if (callbackQuery.data.startsWith('add_comment_')) {
+		switch (action) {
+			case 'add_comment_':
 				const requestId = parseInt(
 					callbackQuery.data.replace('add_comment_', ''),
 				)
 				await ctx.reply('📝 Введите ваш комментарий к запросу:')
 
-				const state = this.offerService.getOfferState(userId) || {
+				const offerState = this.offerService.getOfferState(userId) || {
 					photos: [],
 					videos: [],
 				}
 
-				state.inputType = 'waiting_for_comment'
-				state.contactRequestId = requestId.toString() // конвертируем в строку
-				this.offerService.updateOfferState(userId, state)
+				offerState.inputType = 'waiting_for_comment'
+				offerState.contactRequestId = requestId.toString()
+				this.offerService.updateOfferState(userId, offerState)
 				return
-			}
 
-			// Обработка кнопок объявления
-			if (callbackQuery.data.startsWith('ask_ai_')) {
-				const offerId = callbackQuery.data.replace('ask_ai_', '')
-				// Сохраняем состояние с offerId
+			case 'ask_ai_': {
+				const aiOfferId = callbackQuery.data.replace('ask_ai_', '')
 				const aiState = {
-					offerId,
+					offerId: aiOfferId,
 					inputType: 'ai_question',
 					photos: [],
 					videos: [],
 				}
 				this.offerService.updateOfferState(userId, aiState)
-				await this.offerService.handleAskAI(ctx, offerId)
+				await this.offerService.handleAskAI(ctx, aiOfferId)
 				return
 			}
 
-			if (callbackQuery.data.startsWith('calculate_price_')) {
-				const offerId = callbackQuery.data.replace('calculate_price_', '')
-				await this.offerService.handleCalculatePrice(ctx, offerId)
+			case 'calculate_price_': {
+				const calcOfferId = callbackQuery.data.replace('calculate_price_', '')
+				await this.offerService.handleCalculatePrice(ctx, calcOfferId)
 				return
 			}
 
-			if (callbackQuery.data.startsWith('request_contacts_')) {
-				const offerId = callbackQuery.data.replace('request_contacts_', '')
+			case 'request_contacts_': {
+				const contactOfferId = callbackQuery.data.replace(
+					'request_contacts_',
+					'',
+				)
 				await this.requestService.handleRequestContacts(ctx)
 				return
 			}
 
-			// Обработка просмотра оффера
-			if (callbackQuery.data.startsWith('view_offer_')) {
-				const offerId = callbackQuery.data.replace('view_offer_', '')
-				await this.offerService.handleViewOffer(ctx, offerId) // Добавляем offerId
+			case 'view_offer_': {
+				const viewOfferId = callbackQuery.data.replace('view_offer_', '')
+				await this.offerService.handleViewOffer(ctx, viewOfferId)
 				return
 			}
 
-			// Обработка остальных кнопок
-			switch (callbackQuery.data) {
-				case 'gut_yes':
-					await ctx.answerCbQuery()
-					await this.offerService.handleGutDiscountSelection(ctx, true)
-					break
+			case 'gut_yes':
+				await ctx.answerCbQuery()
+				await this.offerService.handleGutDiscountSelection(ctx, true)
+				break
 
-				case 'gut_no':
-					await ctx.answerCbQuery()
-					await this.offerService.handleGutDiscountSelection(ctx, false)
-					break
+			case 'gut_no':
+				await ctx.answerCbQuery()
+				await this.offerService.handleGutDiscountSelection(ctx, false)
+				break
 
-				case 'create_request':
-					await this.handleCreateRequest(ctx)
-					break
+			case 'create_request':
+				await this.handleCreateRequest(ctx)
+				break
 
-				case 'my_requests':
-					await this.handleMyRequests(ctx)
-					break
+			case 'my_requests':
+				await this.handleMyRequests(ctx)
+				break
 
-				case 'edit_profile':
-					await this.handleEditProfile(ctx)
-					break
+			case 'edit_profile':
+				await this.handleEditProfile(ctx)
+				break
 
-				case 'edit_name':
-					await this.handleEditName(ctx)
-					break
+			case 'edit_name':
+				await this.handleEditName(ctx)
+				break
 
-				case 'edit_phone':
-					await this.handleEditPhone(ctx)
-					break
+			case 'edit_phone':
+				await this.handleEditPhone(ctx)
+				break
 
-				case 'edit_address':
-					await this.handleEditAddress(ctx)
-					break
+			case 'edit_address':
+				await this.handleEditAddress(ctx)
+				break
 
-				case 'offers_list':
-					await this.handleOffersList(ctx)
-					break
+			case 'offers_list':
+				await this.handleOffersList(ctx)
+				break
 
-				case 'back_to_offers_list':
-					await this.handleBackToOffersList(ctx)
-					break
+			case 'back_to_offers_list':
+				await this.handleBackToOffersList(ctx)
+				break
 
-				case 'create_ad':
-					await this.offerService.handleCreateOffer(ctx)
-					break
+			case 'create_ad':
+				await this.offerService.handleCreateOffer(ctx)
+				break
 
-				case 'login':
-					await this.telegramService.handleLogin(ctx)
-					break
+			case 'login':
+				await this.telegramService.handleLogin(ctx)
+				break
 
-				case 'logout':
-					await this.authService.handleLogout(ctx)
-					break
+			case 'logout':
+				await this.authService.handleLogout(ctx)
+				break
 
-				case 'messages':
-					await this.messageService.handleMessages(ctx)
-					break
+			case 'messages':
+				await this.messageService.handleMessages(ctx)
+				break
 
-				case 'profile':
-					await this.profileService.showProfile(ctx)
-					break
+			case 'profile':
+				await this.profileService.showProfile(ctx)
+				break
 
-				case 'menu':
-					await this.telegramService.handleMenu(ctx)
-					break
+			case 'menu':
+				await this.telegramService.handleMenu(ctx)
+				break
 
-				case 'browse_offers':
-				case callbackQuery.data.match(/^browse_offers_\d+$/)?.[0]: // Добавляем обработку пагинации
-					const page =
-						callbackQuery.data === 'browse_offers'
-							? 1
-							: parseInt(callbackQuery.data.replace('browse_offers_', ''))
-					await this.offerService.handleBrowseOffers(ctx, page)
-					break
+			case 'browse_offers':
+			case 'browse_offers_':
+				const page =
+					callbackQuery.data === 'browse_offers'
+						? 1
+						: parseInt(callbackQuery.data.replace('browse_offers_', ''))
+				await this.offerService.handleBrowseOffers(ctx, page)
+				break
 
-				case 'approve_comment':
-					{
-						const requestId = callbackQuery.data.replace('approve_comment_', '')
+			case 'approve_comment':
+				{
+					const requestId = callbackQuery.data.replace('approve_comment_', '')
 
-						// Обновляем статус запроса
-						await this.prisma.contactRequest.update({
-							where: { id: requestId },
-							data: { status: 'APPROVED' },
-						})
+					// Обновляем статус запроса
+					await this.prisma.contactRequest.update({
+						where: { id: requestId },
+						data: { status: 'APPROVED' },
+					})
 
-						// Получаем запрос с данными покупателя
-						const request = await this.prisma.contactRequest.findUnique({
-							where: { id: requestId },
-							include: {
-								buyer: true, // Включаем данные покупателя
-								offer: {
-									include: {
-										user: true, // Включаем данные продавца через объявление
-									},
+					// Получаем запрос с данными покупателя
+					const request = await this.prisma.contactRequest.findUnique({
+						where: { id: requestId },
+						include: {
+							buyer: true, // Включаем данные покупателя
+							offer: {
+								include: {
+									user: true, // Включаем данные продавца через объявление
 								},
 							},
-						})
+						},
+					})
 
-						// Уведомляем покупателя
-						if (request.buyer.telegramId) {
-							await this.telegramClient.sendMessage(
-								request.buyer.telegramId,
-								'✅ Ваш запрос на получение контактов был одобрен администратором.',
-							)
-						}
-
-						await ctx.answerCbQuery('Запрос одобрен')
+					// Уведомляем покупателя
+					if (request.buyer.telegramId) {
+						await this.telegramClient.sendMessage(
+							request.buyer.telegramId,
+							'✅ Ваш запрос на получение контактов был одобрен администратором.',
+						)
 					}
-					break
 
-				case 'reject_comment':
-					{
-						const requestId = callbackQuery.data.replace('reject_comment_', '')
+					await ctx.answerCbQuery('Запрос одобрен')
+				}
+				break
 
-						// Обновляем статус запроса
-						await this.prisma.contactRequest.update({
-							where: { id: requestId },
-							data: { status: 'REJECTED' },
-						})
+			case 'reject_comment':
+				{
+					const requestId = callbackQuery.data.replace('reject_comment_', '')
 
-						// Получаем запрос с данными покупателя
-						const request = await this.prisma.contactRequest.findUnique({
-							where: { id: requestId },
-							include: {
-								buyer: true, // Включаем данные покупателя
-								offer: {
-									include: {
-										user: true, // Включаем данные продавца через объявление
-									},
+					// Обновляем статус запроса
+					await this.prisma.contactRequest.update({
+						where: { id: requestId },
+						data: { status: 'REJECTED' },
+					})
+
+					// Получаем запрос с данными покупателя
+					const request = await this.prisma.contactRequest.findUnique({
+						where: { id: requestId },
+						include: {
+							buyer: true, // Включаем данные покупателя
+							offer: {
+								include: {
+									user: true, // Включаем данные продавца через объявление
 								},
 							},
-						})
+						},
+					})
 
-						// Уведомляем покупателя
-						if (request.buyer.telegramId) {
-							await this.telegramClient.sendMessage(
-								request.buyer.telegramId,
-								'❌ Ваш запрос на получение контактов был отклонен администратором.',
-							)
-						}
-
-						await ctx.answerCbQuery('Запрос отклонен')
+					// Уведомляем покупателя
+					if (request.buyer.telegramId) {
+						await this.telegramClient.sendMessage(
+							request.buyer.telegramId,
+							'❌ Ваш запрос на получение контактов был отклонен администратором.',
+						)
 					}
-					break
 
-				case 'supplier_type_individual':
-					await ctx.answerCbQuery()
-					await this.authService.handleSupplierTypeSelection(ctx, 'INDIVIDUAL')
-					break
+					await ctx.answerCbQuery('Запрос отклонен')
+				}
+				break
 
-				case 'supplier_type_organization':
-					await ctx.answerCbQuery()
-					await this.authService.handleSupplierTypeSelection(
-						ctx,
-						'ORGANIZATION',
-					)
-					break
+			case 'supplier_type_individual':
+				await ctx.answerCbQuery()
+				await this.authService.handleUserTypeSelection(ctx, 'INDIVIDUAL')
+				break
 
-				case 'input_inn':
-					await ctx.answerCbQuery()
-					const innState = await this.authService.getRegistrationState(userId)
-					if (innState) {
-						innState.inputType = 'inn'
-						await this.authService.updateRegistrationState(userId, innState)
+			case 'supplier_type_organization':
+				await ctx.answerCbQuery()
+				await this.authService.handleUserTypeSelection(ctx, 'ORGANIZATION')
+				break
+
+			case 'input_inn':
+				{
+					const state = await this.authService.getRegistrationState(userId)
+					if (state) {
+						state.inputType = 'inn'
+						await this.authService.updateRegistrationState(userId, state)
 						await ctx.reply(
 							'📝 Введите ИНН организации:\n\n' +
 								'ИНН должен содержать 10 цифр\n' +
 								'Пример: 7736207543',
 						)
 					}
-					break
+				}
+				break
 
-				case 'input_ogrn':
-					await ctx.answerCbQuery()
-					const ogrnState = await this.authService.getRegistrationState(userId)
-					if (ogrnState) {
-						ogrnState.inputType = 'ogrn'
-						await this.authService.updateRegistrationState(userId, ogrnState)
+			case 'input_ogrn':
+				{
+					const state = await this.authService.getRegistrationState(userId)
+					if (state) {
+						state.inputType = 'ogrn'
+						await this.authService.updateRegistrationState(userId, state)
 						await ctx.reply(
 							'📝 Введите ОГРН организации:\n\n' +
 								'ОГРН должен содержать 13 цифр\n' +
 								'Пример: 1027700132195',
 						)
 					}
-					break
+				}
+				break
 
-				case 'cattle_type_CALVES':
-					await ctx.answerCbQuery()
-					await this.offerService.handleCattleTypeSelection(ctx, 'CALVES')
-					break
+			case 'cattle_type_CALVES':
+				await ctx.answerCbQuery()
+				await this.offerService.handleCattleTypeSelection(ctx, 'CALVES')
+				break
 
-				case 'cattle_type_BULL_CALVES':
-					await ctx.answerCbQuery()
-					await this.offerService.handleCattleTypeSelection(ctx, 'BULL_CALVES')
-					break
+			case 'cattle_type_BULL_CALVES':
+				await ctx.answerCbQuery()
+				await this.offerService.handleCattleTypeSelection(ctx, 'BULL_CALVES')
+				break
 
-				case 'cattle_type_HEIFERS':
-					await ctx.answerCbQuery()
-					await this.offerService.handleCattleTypeSelection(ctx, 'HEIFERS')
-					break
+			case 'cattle_type_HEIFERS':
+				await ctx.answerCbQuery()
+				await this.offerService.handleCattleTypeSelection(ctx, 'HEIFERS')
+				break
 
-				case 'cattle_type_BREEDING_HEIFERS':
-					await ctx.answerCbQuery()
-					await this.offerService.handleCattleTypeSelection(
-						ctx,
-						'BREEDING_HEIFERS',
+			case 'cattle_type_BREEDING_HEIFERS':
+				await ctx.answerCbQuery()
+				await this.offerService.handleCattleTypeSelection(
+					ctx,
+					'BREEDING_HEIFERS',
+				)
+				break
+
+			case 'cattle_type_BULLS':
+				await ctx.answerCbQuery()
+				await this.offerService.handleCattleTypeSelection(ctx, 'BULLS')
+				break
+
+			case 'cattle_type_COWS':
+				await ctx.answerCbQuery()
+				await this.offerService.handleCattleTypeSelection(ctx, 'COWS')
+				break
+
+			case 'purpose_BREEDING':
+				await ctx.answerCbQuery()
+				await this.offerService.handlePurposeSelection(ctx, 'BREEDING')
+				break
+
+			case 'purpose_COMMERCIAL':
+				await ctx.answerCbQuery()
+				await this.offerService.handlePurposeSelection(ctx, 'COMMERCIAL')
+				break
+
+			case 'price_type_PER_HEAD':
+				await ctx.answerCbQuery()
+				await this.offerService.handlePriceTypeSelection(ctx, 'PER_HEAD')
+				break
+
+			case 'price_type_PER_KG':
+				await ctx.answerCbQuery()
+				await this.offerService.handlePriceTypeSelection(ctx, 'PER_KG')
+				break
+
+			case 'customs_yes':
+				await ctx.answerCbQuery()
+				await this.offerService.handleCustomsUnionSelection(ctx, true)
+				break
+
+			case 'customs_no':
+				await ctx.answerCbQuery()
+				await this.offerService.handleCustomsUnionSelection(ctx, false)
+				break
+
+			case 'my_ads':
+				await ctx.answerCbQuery()
+				await this.offerService.handleMyAds(ctx)
+				break
+
+			case 'register':
+				await ctx.reply('Выберите вашу роль:', {
+					reply_markup: {
+						inline_keyboard: [
+							[
+								{ text: '🛒 Покупатель', callback_data: 'role_BUYER' },
+								{ text: '📦 Поставщик', callback_data: 'role_SUPPLIER' },
+							],
+							[{ text: '🚛 Перевозчик', callback_data: 'role_CARRIER' }],
+						],
+					},
+				})
+				break
+
+			case 'role_BUYER':
+			case 'role_SUPPLIER':
+			case 'role_CARRIER':
+				await this.authService.handleRoleSelection(ctx, action.split('_')[1])
+				break
+
+			case 'supplier_type_INDIVIDUAL':
+			case 'supplier_type_ORGANIZATION':
+				await this.authService.handleUserTypeSelection(
+					ctx,
+					action.replace('supplier_type_', ''),
+				)
+				break
+
+			case 'buyer_type_INDIVIDUAL':
+			case 'buyer_type_ORGANIZATION':
+				await this.authService.handleUserTypeSelection(
+					ctx,
+					action.replace('buyer_type_', ''),
+				)
+				break
+
+			case 'input_inn':
+				{
+					const state = await this.authService.getRegistrationState(userId)
+					if (state) {
+						state.inputType = 'inn'
+						await this.authService.updateRegistrationState(userId, state)
+						await ctx.reply(
+							'📝 Введите ИНН организации:\n\n' +
+								'ИНН должен содержать 10 цифр\n' +
+								'Пример: 7736207543',
+						)
+					}
+				}
+				break
+
+			case 'input_ogrn':
+				{
+					const state = await this.authService.getRegistrationState(userId)
+					if (state) {
+						state.inputType = 'ogrn'
+						await this.authService.updateRegistrationState(userId, state)
+						await ctx.reply(
+							'📝 Введите ОГРН организации:\n\n' +
+								'ОГРН должен содержать 13 цифр\n' +
+								'Пример: 1027700132195',
+						)
+					}
+				}
+				break
+
+			case 'skip_vin':
+				{
+					const state = await this.authService.getRegistrationState(userId)
+					if (state) {
+						state.vehicleVin = null
+						state.inputType = 'cattle_exp'
+						await this.authService.updateRegistrationState(userId, state)
+						await ctx.reply('🚛 Есть ли у вас опыт перевозки КРС?', {
+							reply_markup: {
+								inline_keyboard: [
+									[
+										{ text: '✅ Да', callback_data: 'cattle_exp_yes' },
+										{ text: '❌ Нет', callback_data: 'cattle_exp_no' },
+									],
+								],
+							},
+						})
+					}
+				}
+				break
+
+			case 'cattle_exp_yes':
+				await ctx.answerCbQuery()
+				const expState = await this.authService.getRegistrationState(userId)
+				if (expState) {
+					expState.hasCattleExp = true
+					expState.inputType = 'cattle_exp_years'
+					await this.authService.updateRegistrationState(userId, expState)
+					await ctx.reply('📅 Укажите опыт перевозки КРС (в годах):')
+				}
+				break
+
+			case 'cattle_exp_no':
+				await ctx.answerCbQuery()
+				const noExpState = await this.authService.getRegistrationState(userId)
+				if (noExpState) {
+					noExpState.hasCattleExp = false
+					noExpState.cattleExpYears = 0
+					noExpState.inputType = 'equipment'
+					await this.authService.updateRegistrationState(userId, noExpState)
+					await ctx.reply('🔧 Выберите имеющееся оборудование:', {
+						reply_markup: {
+							inline_keyboard: [
+								[
+									{ text: '💧 Поилки', callback_data: 'eq_water' },
+									{ text: '💨 Вентиляция', callback_data: 'eq_vent' },
+								],
+								[
+									{ text: '🌡️ Контроль температуры', callback_data: 'eq_temp' },
+									{ text: '📹 Видеонаблюдение', callback_data: 'eq_cctv' },
+								],
+								[
+									{ text: '📍 GPS-трекер', callback_data: 'eq_gps' },
+									{ text: '🛗 Погрузочная рампа', callback_data: 'eq_ramp' },
+								],
+								[{ text: '➡️ Далее', callback_data: 'equipment_done' }],
+							],
+						},
+					})
+				}
+				break
+
+			case 'buyer_type_PRIVATE':
+			case 'buyer_type_FARM':
+			case 'buyer_type_AGRICULTURAL':
+			case 'buyer_type_MEAT_FACTORY':
+			case 'buyer_type_FEEDLOT':
+			case 'buyer_type_GRANT_MEMBER':
+				await ctx.answerCbQuery()
+				const buyerType = action.replace('buyer_type_', '')
+				await this.authService.handleUserTypeSelection(ctx, buyerType)
+				break
+
+			case 'input_inn':
+				{
+					const state = await this.authService.getRegistrationState(userId)
+					if (state) {
+						state.inputType = 'inn'
+						await this.authService.updateRegistrationState(userId, state)
+						await ctx.reply(
+							'📝 Введите ИНН организации:\n\n' +
+								'ИНН должен содержать 10 цифр\n' +
+								'Пример: 7736207543',
+						)
+					}
+				}
+				break
+
+			case 'input_ogrn':
+				{
+					const state = await this.authService.getRegistrationState(userId)
+					if (state) {
+						state.inputType = 'ogrn'
+						await this.authService.updateRegistrationState(userId, state)
+						await ctx.reply(
+							'📝 Введите ОГРН организации:\n\n' +
+								'ОГРН должен содержать 13 цифр\n' +
+								'Пример: 1027700132195',
+						)
+					}
+				}
+				break
+
+			case 'carrier_type_PRIVATE':
+			case 'carrier_type_ORGANIZATION':
+				await ctx.answerCbQuery()
+				const carrierType = action.replace('carrier_type_', '')
+				await this.authService.handleUserTypeSelection(ctx, carrierType)
+				break
+
+			case 'vehicle_type_TRUCK':
+			case 'vehicle_type_CATTLE_TRUCK':
+				await ctx.answerCbQuery()
+				const vehicleType = action.replace('vehicle_type_', '')
+				const registrationState =
+					await this.authService.getRegistrationState(userId)
+				if (registrationState) {
+					registrationState.vehicleType = vehicleType
+					registrationState.inputType = 'vehicle_brand'
+					await this.authService.updateRegistrationState(
+						userId,
+						registrationState,
 					)
-					break
+					await ctx.reply('🚛 Введите марку транспортного средства:')
+				}
+				break
 
-				case 'cattle_type_BULLS':
-					await ctx.answerCbQuery()
-					await this.offerService.handleCattleTypeSelection(ctx, 'BULLS')
-					break
+			case 'equipment_':
+				await ctx.answerCbQuery()
+				const equipmentState =
+					await this.authService.getRegistrationState(userId)
+				if (equipmentState) {
+					equipmentState.equipment = equipmentState.equipment || []
+					const keyboard = [
+						[
+							{
+								text: `${equipmentState.equipment.includes(Equipment.WATER_SYSTEM) ? '✅' : '💧'} Поилки`,
+								callback_data: 'eq_water',
+							},
+							{
+								text: `${equipmentState.equipment.includes(Equipment.VENTILATION) ? '✅' : '💨'} Вентиляция`,
+								callback_data: 'eq_vent',
+							},
+						],
+						[
+							{
+								text: `${equipmentState.equipment.includes(Equipment.TEMPERATURE_CONTROL) ? '✅' : '🌡️'} Контроль температуры`,
+								callback_data: 'eq_temp',
+							},
+							{
+								text: `${equipmentState.equipment.includes(Equipment.CCTV) ? '✅' : '📹'} Видеонаблюдение`,
+								callback_data: 'eq_cctv',
+							},
+						],
+						[
+							{
+								text: `${equipmentState.equipment.includes(Equipment.GPS_TRACKER) ? '✅' : '📍'} GPS-трекер`,
+								callback_data: 'eq_gps',
+							},
+							{
+								text: `${equipmentState.equipment.includes(Equipment.LOADING_RAMP) ? '✅' : '🛗'} Погрузочная рампа`,
+								callback_data: 'eq_ramp',
+							},
+						],
+						[{ text: '➡️ Далее', callback_data: 'equipment_done' }],
+					]
+					await ctx.editMessageReplyMarkup({ inline_keyboard: keyboard })
+				}
+				break
 
-				case 'cattle_type_COWS':
-					await ctx.answerCbQuery()
-					await this.offerService.handleCattleTypeSelection(ctx, 'COWS')
-					break
+			case 'eq_water':
+			case 'eq_vent':
+			case 'eq_temp':
+			case 'eq_cctv':
+			case 'eq_gps':
+			case 'eq_ramp':
+				await this.handleEquipmentSelection(ctx)
+				break
 
-				case 'purpose_BREEDING':
-					await ctx.answerCbQuery()
-					await this.offerService.handlePurposeSelection(ctx, 'BREEDING')
-					break
+			case 'equipment_done':
+				await this.handleEquipmentDone(ctx)
+				break
 
-				case 'purpose_COMMERCIAL':
-					await ctx.answerCbQuery()
-					await this.offerService.handlePurposeSelection(ctx, 'COMMERCIAL')
-					break
+			case 'sanitary_yes':
+				await ctx.answerCbQuery()
+				const yesState = await this.authService.getRegistrationState(userId)
+				if (yesState) {
+					yesState.sanitaryPassport = true
+					yesState.inputType = 'sanitary_exp_date'
+					await this.authService.updateRegistrationState(userId, yesState)
+					await ctx.reply(
+						'📅 Введите дату окончания действия санитарного паспорта (ДД.ММ.ГГГГ):',
+					)
+				}
+				break
 
-				case 'price_type_PER_HEAD':
-					await ctx.answerCbQuery()
-					await this.offerService.handlePriceTypeSelection(ctx, 'PER_HEAD')
-					break
+			case 'sanitary_no':
+				await ctx.answerCbQuery()
+				const noState = await this.authService.getRegistrationState(userId)
+				if (noState) {
+					noState.sanitaryPassport = false
+					noState.sanitaryExpDate = null
+					// Завершаем регистрацию
+					await this.authService.completeRegistration(ctx, noState)
+				}
+				break
 
-				case 'price_type_PER_KG':
-					await ctx.answerCbQuery()
-					await this.offerService.handlePriceTypeSelection(ctx, 'PER_KG')
-					break
-
-				case 'customs_yes':
-					await ctx.answerCbQuery()
-					await this.offerService.handleCustomsUnionSelection(ctx, true)
-					break
-
-				case 'customs_no':
-					await ctx.answerCbQuery()
-					await this.offerService.handleCustomsUnionSelection(ctx, false)
-					break
-
-				case 'my_ads':
-					await ctx.answerCbQuery()
-					await this.offerService.handleMyAds(ctx)
-					break
-
-				default:
-					console.log('Неизвестный callback:', callbackQuery.data)
-			}
-		} catch (error) {
-			console.error('Ошибка при обработке callback:', error)
-			await ctx.reply('❌ Произошла ошибка при обработке запроса')
+			default:
+				console.log('Неизвестный callback:', action)
 		}
 	}
 
@@ -2225,7 +2489,7 @@ ${offer.customsUnion ? '✅ В реестре Таможенного союза\
 			await ctx.answerCbQuery()
 			const callbackQuery = ctx.callbackQuery as any
 			const type = callbackQuery.data.replace('supplier_type_', '')
-			await this.authService.handleSupplierTypeSelection(ctx, type)
+			await this.authService.handleUserTypeSelection(ctx, type)
 		} catch (error) {
 			console.error('Ошибка при выборе типа поставщика:', error)
 			await ctx.reply('❌ Произошла ошибка при обработке запроса')
@@ -2605,6 +2869,253 @@ ${offer.customsUnion ? '\n🌍 Для стран ТС' : ''}
 		} catch (error) {
 			console.error('Ошибка при обработке пагинации:', error)
 			await ctx.reply('❌ Произошла ошибка при загрузке объявлений')
+		}
+	}
+
+	@Action(/carrier_type_.*/)
+	async handleCarrierTypeSelection(@Ctx() ctx: Context) {
+		try {
+			await ctx.answerCbQuery()
+			// Исправляем получение data из callbackQuery
+			const callbackQuery = ctx.callbackQuery as any
+			const type = callbackQuery.data.replace('carrier_type_', '')
+			await this.authService.handleUserTypeSelection(ctx, type)
+		} catch (error) {
+			console.error('Ошибка при выборе типа перевозчика:', error)
+			await ctx.reply('❌ Произошла ошибка при обработке запроса')
+		}
+	}
+
+	@Action('skip_vin')
+	async handleSkipVin(@Ctx() ctx: Context) {
+		try {
+			await ctx.answerCbQuery()
+			const userId = ctx.from.id
+			const state = this.authService.getRegistrationState(userId)
+
+			if (!state) {
+				await ctx.reply('❌ Начните регистрацию заново')
+				return
+			}
+
+			state.vehicleVin = null
+			state.inputType = 'email'
+			this.authService.updateRegistrationState(userId, state)
+			await ctx.reply('📧 Введите ваш email:')
+		} catch (error) {
+			console.error('Ошибка при пропуске VIN:', error)
+			await ctx.reply('❌ Произошла ошибка')
+		}
+	}
+
+	@Action(/buyer_type_.*/)
+	async handleBuyerTypeSelection(@Ctx() ctx: Context) {
+		try {
+			await ctx.answerCbQuery()
+			const callbackQuery = ctx.callbackQuery as any
+			const type = callbackQuery.data.replace('buyer_type_', '')
+			await this.authService.handleUserTypeSelection(ctx, type)
+		} catch (error) {
+			console.error('Ошибка при выборе типа покупателя:', error)
+			await ctx.reply('❌ Произошла ошибка при обработке запроса')
+		}
+	}
+
+	@Action('input_inn')
+	async handleInnInput(@Ctx() ctx: Context) {
+		try {
+			await ctx.answerCbQuery()
+			const userId = ctx.from.id
+			const state = await this.authService.getRegistrationState(userId)
+			if (state) {
+				state.inputType = 'inn'
+				await this.authService.updateRegistrationState(userId, state)
+				await ctx.reply(
+					'📝 Введите ИНН организации:\n\n' +
+						'ИНН должен содержать 10 цифр\n' +
+						'Пример: 7736207543',
+				)
+			}
+		} catch (error) {
+			console.error('Ошибка при обработке ввода ИНН:', error)
+			await ctx.reply('❌ Произошла ошибка')
+		}
+	}
+
+	@Action('input_ogrn')
+	async handleOgrnInput(@Ctx() ctx: Context) {
+		try {
+			await ctx.answerCbQuery()
+			const userId = ctx.from.id
+			const state = await this.authService.getRegistrationState(userId)
+			if (state) {
+				state.inputType = 'ogrn'
+				await this.authService.updateRegistrationState(userId, state)
+				await ctx.reply(
+					'📝 Введите ОГРН организации:\n\n' +
+						'ОГРН должен содержать 13 цифр\n' +
+						'Пример: 1027700132195',
+				)
+			}
+		} catch (error) {
+			console.error('Ошибка при обработке ввода ОГРН:', error)
+			await ctx.reply('❌ Произошла ошибка')
+		}
+	}
+
+	@Action(/vehicle_type_.*/)
+	async handleVehicleType(@Ctx() ctx: Context) {
+		try {
+			await ctx.answerCbQuery()
+			const callbackQuery = ctx.callbackQuery as any
+			const type = callbackQuery.data.replace('vehicle_type_', '')
+			const userId = ctx.from.id
+			const state = await this.authService.getRegistrationState(userId)
+			if (state) {
+				state.vehicleType = type
+				state.inputType = 'vehicle_brand'
+				await this.authService.updateRegistrationState(userId, state)
+				await ctx.reply('🚛 Введите марку транспортного средства:')
+			}
+		} catch (error) {
+			console.error('Ошибка при выборе типа транспорта:', error)
+			await ctx.reply('❌ Произошла ошибка при обработке запроса')
+		}
+	}
+
+	@Action(/eq_.*/)
+	async handleEquipmentSelection(@Ctx() ctx: Context) {
+		try {
+			await ctx.answerCbQuery()
+			const callbackQuery = ctx.callbackQuery as any
+			const equipment = callbackQuery.data.replace('eq_', '')
+			const userId = ctx.from.id
+			const state = await this.authService.getRegistrationState(userId)
+
+			if (state) {
+				state.equipment = state.equipment || []
+
+				// Преобразуем callback в enum
+				const equipmentMap = {
+					water: Equipment.WATER_SYSTEM,
+					vent: Equipment.VENTILATION,
+					temp: Equipment.TEMPERATURE_CONTROL,
+					cctv: Equipment.CCTV,
+					gps: Equipment.GPS_TRACKER,
+					ramp: Equipment.LOADING_RAMP,
+				}
+
+				const equipmentEnum =
+					equipmentMap[equipment as keyof typeof equipmentMap]
+				if (!equipmentEnum) return
+
+				const equipmentIndex = state.equipment.indexOf(equipmentEnum)
+				if (equipmentIndex === -1) {
+					state.equipment.push(equipmentEnum)
+				} else {
+					state.equipment.splice(equipmentIndex, 1)
+				}
+
+				await this.authService.updateRegistrationState(userId, state)
+
+				// Обновляем сообщение с новыми кнопками
+				const keyboard = [
+					[
+						{
+							text: `${state.equipment.includes(Equipment.WATER_SYSTEM) ? '✅' : '💧'} Поилки`,
+							callback_data: 'eq_water',
+						},
+						{
+							text: `${state.equipment.includes(Equipment.VENTILATION) ? '✅' : '💨'} Вентиляция`,
+							callback_data: 'eq_vent',
+						},
+					],
+					[
+						{
+							text: `${state.equipment.includes(Equipment.TEMPERATURE_CONTROL) ? '✅' : '🌡️'} Контроль температуры`,
+							callback_data: 'eq_temp',
+						},
+						{
+							text: `${state.equipment.includes(Equipment.CCTV) ? '✅' : '📹'} Видеонаблюдение`,
+							callback_data: 'eq_cctv',
+						},
+					],
+					[
+						{
+							text: `${state.equipment.includes(Equipment.GPS_TRACKER) ? '✅' : '📍'} GPS-трекер`,
+							callback_data: 'eq_gps',
+						},
+						{
+							text: `${state.equipment.includes(Equipment.LOADING_RAMP) ? '✅' : '🛗'} Погрузочная рампа`,
+							callback_data: 'eq_ramp',
+						},
+					],
+					[{ text: '➡️ Далее', callback_data: 'equipment_done' }],
+				]
+
+				await ctx.editMessageReplyMarkup({ inline_keyboard: keyboard })
+			}
+		} catch (error) {
+			console.error('Ошибка при выборе оборудования:', error)
+			await ctx.reply('❌ Произошла ошибка при обработке запроса')
+		}
+	}
+
+	@Action('equipment_done')
+	async handleEquipmentDone(@Ctx() ctx: Context) {
+		try {
+			await ctx.answerCbQuery()
+			const userId = ctx.from.id
+			const state = await this.authService.getRegistrationState(userId)
+			if (state) {
+				state.inputType = 'working_regions'
+				await this.authService.updateRegistrationState(userId, state)
+				await ctx.reply('📍 Укажите регионы работы через запятую:')
+			}
+		} catch (error) {
+			console.error('Ошибка при завершении выбора оборудования:', error)
+			await ctx.reply('❌ Произошла ошибка при обработке запроса')
+		}
+	}
+
+	@Action('sanitary_yes')
+	async handleSanitaryYes(@Ctx() ctx: Context) {
+		try {
+			await ctx.answerCbQuery()
+			const userId = ctx.from.id
+			const state = await this.authService.getRegistrationState(userId)
+			if (state) {
+				state.sanitaryPassport = true
+				state.inputType = 'sanitary_exp_date'
+				await this.authService.updateRegistrationState(userId, state)
+				await ctx.reply(
+					'📅 Введите дату окончания действия санитарного паспорта (ДД.ММ.ГГГГ):',
+				)
+			}
+		} catch (error) {
+			console.error('Ошибка при обработке наличия санитарного паспорта:', error)
+			await ctx.reply('❌ Произошла ошибка при обработке запроса')
+		}
+	}
+
+	@Action('sanitary_no')
+	async handleSanitaryNo(@Ctx() ctx: Context) {
+		try {
+			await ctx.answerCbQuery()
+			const userId = ctx.from.id
+			const state = await this.authService.getRegistrationState(userId)
+			if (state) {
+				state.sanitaryPassport = false
+				state.sanitaryExpDate = null
+				// Завершаем регистрацию
+				await this.authService.completeRegistration(ctx, state)
+			}
+		} catch (error) {
+			console.error(
+				'Ошибка при обработке отсутствия санитарного паспорта:',
+				error,
+			)
+			await ctx.reply('❌ Произошла ошибка при обработке запроса')
 		}
 	}
 }

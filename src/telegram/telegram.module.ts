@@ -36,7 +36,6 @@ import { TelegramUpdate } from './telegram.update'
 					middlewares: [
 						async (ctx, next) => {
 							try {
-								console.log('Incoming update:', ctx.update)
 								await next()
 							} catch (err) {
 								console.error('Ошибка в middleware:', err)

@@ -1,8 +1,9 @@
 import { Injectable, NotFoundException } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import { JwtService } from '@nestjs/jwt'
-import { BuyerType, Role } from '@prisma/client'
+import { BuyerType, Equipment, Role, VehicleType } from '@prisma/client'
 import * as bcrypt from 'bcrypt'
+import { Action, Ctx } from 'nestjs-telegraf'
 import { Context } from 'telegraf'
 import { PrismaService } from '../../prisma.service'
 import { TelegramClient } from '../telegram.client'
@@ -21,6 +22,21 @@ interface RegistrationState {
 	mercuryNumber: string | null
 	password: string | null
 	buyerType: string | null
+	vehicleType?: VehicleType
+	vehicleBrand?: string
+	vehicleModel?: string
+	vehicleYear?: number
+	vehicleCapacity?: number
+	vehicleLicensePlate?: string
+	vehicleVin?: string
+	companyType?: string
+	confirmPassword?: string
+	hasCattleExp?: boolean
+	cattleExpYears?: number
+	equipment?: Equipment[]
+	workingRegions?: string[]
+	sanitaryPassport?: boolean
+	sanitaryExpDate?: Date
 }
 
 // Добавляем интерфейс для состояния авторизации
@@ -60,256 +76,262 @@ export class TelegramAuthService {
 		const state = this.registrationStates.get(userId)
 
 		if (!state) {
-			console.log(`Состояние регистрации не найдено для пользователя ${userId}`)
+			await ctx.reply('❌ Начните регистрацию заново')
 			return
 		}
 
-		// Обработка ввода ИНН
-		if (state.inputType === 'inn') {
-			try {
-				// Базовая валидация ИНН
-				if (text.length !== 10 && text.length !== 12) {
+		switch (state.inputType) {
+			case 'inn':
+				try {
+					const isValid = await this.checkInn(text)
+					if (isValid) {
+						state.inn = text
+						state.inputType = 'email'
+						await ctx.reply(
+							'✅ ИНН проверен и подтвержден! Теперь введите ваш email:',
+						)
+					} else {
+						await ctx.reply('❌ Неверный ИНН или организация не активна')
+					}
+				} catch (error) {
+					await ctx.reply('❌ Ошибка при проверке ИНН')
+				}
+				break
+
+			case 'ogrn':
+				try {
+					const isValid = await this.checkOgrn(text)
+					if (isValid) {
+						state.ogrn = text
+						state.inputType = 'email'
+						await ctx.reply(
+							'✅ ОГРН проверен и подтвержден! Теперь введите ваш email:',
+						)
+					} else {
+						await ctx.reply('❌ Неверный ОГРН или организация не активна')
+					}
+				} catch (error) {
+					await ctx.reply('❌ Ошибка при проверке ОГРН')
+				}
+				break
+
+			case 'email':
+				if (await this.validateEmail(text)) {
+					state.email = text
+					state.inputType = 'password'
+					await ctx.reply('🔑 Придумайте пароль (минимум 6 символов):')
+				} else {
 					await ctx.reply(
-						'❌ ИНН должен содержать 10 или 12 цифр. Попробуйте еще раз:',
+						'❌ Неверный формат email\n\n📝 Пример: example@mail.com',
 					)
+				}
+				break
+
+			case 'password':
+				if (text.length < 6) {
+					await ctx.reply('❌ Пароль должен содержать минимум 6 символов')
 					return
 				}
+				state.password = text
+				state.inputType = 'confirm_password'
+				await ctx.reply('🔄 Повторите пароль для подтверждения:')
+				break
 
-				// Проверка ИНН через API Newton
-				const isValid = await this.checkInn(text)
-				if (!isValid) {
-					await ctx.reply(
-						'❌ ИНН не найден или не активен. Попробуйте еще раз:',
-					)
+			case 'confirm_password':
+				if (text !== state.password) {
+					await ctx.reply('❌ Пароли не совпадают. Попробуйте еще раз:')
 					return
 				}
+				state.inputType = 'name'
+				await ctx.reply('👤 Введите ваше имя:')
+				break
 
-				state.inn = text
-				state.inputType = 'email'
-				this.registrationStates.set(userId, state)
-				await ctx.reply(
-					'✅ ИНН проверен и подтвержден! Теперь введите ваш email:',
-				)
-				return
-			} catch (error) {
-				console.error('Ошибка при проверке ИНН:', error)
-				await ctx.reply(
-					'❌ Произошла ошибка при проверке ИНН. Попробуйте еще раз:',
-				)
-				return
-			}
-		}
+			case 'name':
+				state.name = text
+				state.inputType = 'phone'
+				await ctx.reply('📱 Введите ваш номер телефона в формате +7XXXXXXXXXX:')
+				break
 
-		// Обработка ввода ОГРН
-		if (state.inputType === 'ogrn') {
-			try {
-				// Базовая валидация ОГРН
-				if (text.length !== 13 && text.length !== 15) {
+			case 'phone':
+				if (this.validatePhone(text)) {
+					state.phone = text
+					state.inputType = 'address'
+					await ctx.reply('📍 Введите ваш адрес:')
+				} else {
 					await ctx.reply(
-						'❌ ОГРН должен содержать 13 или 15 цифр. Попробуйте еще раз:',
+						'❌ Неверный формат номера телефона\n\n📝 Пример: +79991234567',
 					)
-					return
 				}
+				break
 
-				// Проверка ОГРН через API Newton
-				const isValid = await this.checkOgrn(text)
-				if (!isValid) {
-					await ctx.reply(
-						'❌ ОГРН не найден или не активен. Попробуйте еще раз:',
-					)
-					return
-				}
-
-				state.ogrn = text
-				state.inputType = 'email'
-				this.registrationStates.set(userId, state)
-				await ctx.reply(
-					'✅ ОГРН проверен и подтвержден! Теперь введите ваш email:',
-				)
-				return
-			} catch (error) {
-				console.error('Ошибка при проверке ОГРН:', error)
-				await ctx.reply(
-					'❌ Произошла ошибка при проверке ОГРН. Попробуйте еще раз:',
-				)
-				return
-			}
-		}
-
-		// Обработка ввода email
-		if (state.inputType === 'email') {
-			if (!this.validateEmail(text)) {
-				await ctx.reply(
-					'❌ Неверный формат email\n\n📝 Пример: example@mail.com',
-				)
-				return
-			}
-
-			state.email = text
-			state.inputType = 'password'
-			await ctx.reply('🔑 Придумайте пароль (минимум 6 символов):')
-			this.registrationStates.set(userId, state)
-			return
-		}
-
-		// Обработка ввода пароля
-		if (state.inputType === 'password') {
-			if (text.length < 6) {
-				await ctx.reply('❌ Пароль должен содержать минимум 6 символов')
-				return
-			}
-
-			state.password = text
-			state.inputType = 'confirmPassword'
-			this.registrationStates.set(userId, state)
-			await ctx.reply('🔄 Повторите пароль для подтверждения:')
-			return
-		}
-
-		// Обработка подтверждения пароля
-		if (state.inputType === 'confirmPassword') {
-			if (text !== state.password) {
-				await ctx.reply('❌ Пароли не совпадают. Введите пароль заново:')
-				state.inputType = 'password'
-				state.password = null
-				this.registrationStates.set(userId, state)
-				return
-			}
-			state.inputType = 'name'
-			this.registrationStates.set(userId, state)
-			await ctx.reply('👤 Введите ваше ФИО:')
-			return
-		}
-
-		// Обработка ввода имени
-		if (state.inputType === 'name') {
-			state.name = text
-			state.inputType = 'phone'
-			await ctx.reply(
-				'📱 Введите ваш номер телефона:\n\n📝 Пример: +79991234567',
-			)
-			this.registrationStates.set(userId, state)
-			return
-		}
-
-		// Обработка ввода телефона
-		if (state.inputType === 'phone') {
-			if (!this.validatePhone(text)) {
-				await ctx.reply(
-					'❌ Неверный формат номера телефона\n\n📝 Пример: +79991234567',
-				)
-				return
-			}
-
-			state.phone = text
-			state.inputType = 'mercury'
-			await ctx.reply(
-				'📋 Введите ваш RU-номер в системе "Меркурий" или нажмите "Пропустить":',
-				{
-					reply_markup: {
-						inline_keyboard: [
-							[{ text: '⏩ Пропустить', callback_data: 'skip_mercury_reg' }],
-							[{ text: '« Отмена', callback_data: 'menu' }],
-						],
-					},
-				},
-			)
-			this.registrationStates.set(userId, state)
-			return
-		}
-
-		// Обработка ввода номера Меркурий
-		if (state.inputType === 'mercury') {
-			state.mercuryNumber = text
-			state.inputType = 'address'
-			await ctx.reply('📍 Введите ваш адрес:')
-			this.registrationStates.set(userId, state)
-			return
-		}
-
-		// Обработка ввода адреса
-		if (state.inputType === 'address') {
-			if (text.length < 5) {
-				await ctx.reply('❌ Адрес должен содержать минимум 5 символов')
-				return
-			}
-
-			state.address = text
-
-			try {
-				// Хешируем пароль перед сохранением
-				const hashedPassword = await bcrypt.hash(state.password, 10)
-
-				// Проверяем, что buyerType является допустимым значением BuyerType
-				let buyerType = state.buyerType as BuyerType
-
-				// Создаем пользователя в базе данных
-				await this.prisma.user.create({
-					data: {
-						email: state.email,
-						password: hashedPassword,
-						name: state.name,
-						phone: state.phone,
-						address: state.address,
-						role: state.role as Role,
-						telegramId: userId.toString(),
-						mercuryNumber: state.mercuryNumber,
-						buyerType: buyerType,
-						isVerified: false, // Важно: устанавливаем isVerified в false
-					},
-				})
-
-				// Очищаем состояние регистрации
-				this.registrationStates.delete(userId)
-
-				// Отправляем сообщение об ожидании модерации
-				await ctx.reply(
-					'✅ Регистрация успешно завершена!\n\n' +
-						'Ваша заявка отправлена на модерацию. ' +
-						'После проверки администратором вы получите уведомление и сможете войти в систему.',
-					{
+			case 'address':
+				state.address = text
+				// Если это перевозчик, переходим к вопросам о транспорте
+				if (state.role === 'CARRIER') {
+					state.inputType = 'vehicle_type'
+					await ctx.reply('🚛 Укажите тип транспортного средства:', {
 						reply_markup: {
 							inline_keyboard: [
-								[{ text: '🔑 Войти', callback_data: 'login' }],
-								[{ text: '« На главную', callback_data: 'start' }],
+								[
+									{ text: '🚛 Грузовик', callback_data: 'vehicle_type_TRUCK' },
+									{
+										text: '🚐 Скотовоз',
+										callback_data: 'vehicle_type_CATTLE_TRUCK',
+									},
+								],
 							],
 						},
-					},
-				)
-			} catch (error) {
-				console.error('Ошибка при создании пользователя:', error)
-				await ctx.reply(
-					'❌ Произошла ошибка при регистрации. Попробуйте позже.',
-				)
-			}
-			return
-		}
+					})
+				} else {
+					// Для остальных ролей завершаем регистрацию
+					await this.completeRegistration(ctx, state)
+				}
+				break
 
-		// Обработка ИНН/ОГРН
-		if (state.entityType === 'ORGANIZATION') {
-			if (state.inputType === 'inn') {
-				const isValid = await this.checkInn(text)
-				if (!isValid) {
-					await ctx.reply(
-						'❌ ИНН не найден или не активен. Попробуйте еще раз:',
-					)
+			case 'vehicle_type':
+				state.vehicleType = text as VehicleType
+				state.inputType = 'vehicle_brand'
+				await ctx.reply('🚛 Введите марку транспортного средства:')
+				break
+
+			case 'vehicle_brand':
+				state.vehicleBrand = text
+				state.inputType = 'vehicle_model'
+				await ctx.reply('📝 Введите модель транспортного средства:')
+				break
+
+			case 'vehicle_model':
+				state.vehicleModel = text
+				state.inputType = 'vehicle_year'
+				await ctx.reply('📅 Введите год выпуска:')
+				break
+
+			case 'vehicle_year':
+				const year = parseInt(text)
+				if (isNaN(year) || year < 1970 || year > new Date().getFullYear()) {
+					await ctx.reply('❌ Введите корректный год выпуска')
 					return
 				}
-				state.inn = text
-				state.inputType = 'email'
-				await ctx.reply('✅ ИНН введен верно! Теперь введите ваш email:')
-			} else if (state.inputType === 'ogrn') {
-				const isValid = await this.checkOgrn(text)
-				if (!isValid) {
-					await ctx.reply(
-						'❌ ОГРН не найден или не активен. Попробуйте еще раз:',
-					)
+				state.vehicleYear = year
+				state.inputType = 'vehicle_capacity'
+				await ctx.reply('🔢 Введите вместимость (количество голов КРС):')
+				break
+
+			case 'vehicle_capacity':
+				const capacity = parseInt(text)
+				if (isNaN(capacity) || capacity <= 0) {
+					await ctx.reply('❌ Введите корректную вместимость')
 					return
 				}
-				state.ogrn = text
-				state.inputType = 'email'
-				await ctx.reply('✅ ОГРН введен верно! Теперь введите ваш email:')
-			}
+				state.vehicleCapacity = capacity
+				state.inputType = 'vehicle_license'
+				await ctx.reply('🚗 Введите государственный номер:')
+				break
+
+			case 'vehicle_license':
+				state.vehicleLicensePlate = text
+				state.inputType = 'vehicle_vin'
+				await ctx.reply('🔍 Введите VIN номер (можно пропустить):', {
+					reply_markup: {
+						inline_keyboard: [
+							[{ text: '⏩ Пропустить', callback_data: 'skip_vin' }],
+						],
+					},
+				})
+				break
+
+			case 'vehicle_vin':
+				if (text !== 'skip') {
+					state.vehicleVin = text
+				}
+				state.inputType = 'cattle_exp'
+				await ctx.reply('🚛 Есть ли у вас опыт перевозки КРС?', {
+					reply_markup: {
+						inline_keyboard: [
+							[
+								{ text: '✅ Да', callback_data: 'cattle_exp_yes' },
+								{ text: '❌ Нет', callback_data: 'cattle_exp_no' },
+							],
+						],
+					},
+				})
+				break
+
+			case 'cattle_exp_years':
+				const years = parseInt(text)
+				if (isNaN(years) || years < 0) {
+					await ctx.reply('❌ Введите корректное количество лет')
+					return
+				}
+				state.cattleExpYears = years
+				state.inputType = 'equipment'
+				await ctx.reply('🔧 Выберите имеющееся оборудование:', {
+					reply_markup: {
+						inline_keyboard: [
+							[
+								{ text: '💧 Поилки', callback_data: 'eq_water' },
+								{ text: '💨 Вентиляция', callback_data: 'eq_vent' },
+							],
+							[
+								{ text: '🌡️ Контроль температуры', callback_data: 'eq_temp' },
+								{ text: '📹 Видеонаблюдение', callback_data: 'eq_cctv' },
+							],
+							[
+								{ text: '📍 GPS-трекер', callback_data: 'eq_gps' },
+								{ text: '🛗 Погрузочная рампа', callback_data: 'eq_ramp' },
+							],
+							[{ text: '➡️ Далее', callback_data: 'equipment_done' }],
+						],
+					},
+				})
+				break
+
+			case 'working_regions':
+				state.workingRegions = text.split(',').map(r => r.trim())
+				state.inputType = 'sanitary'
+				await ctx.reply('📋 Есть ли у вас санитарный паспорт на транспорт?', {
+					reply_markup: {
+						inline_keyboard: [
+							[
+								{ text: '✅ Да', callback_data: 'sanitary_yes' },
+								{ text: '❌ Нет', callback_data: 'sanitary_no' },
+							],
+						],
+					},
+				})
+				break
+
+			case 'sanitary':
+				state.sanitaryPassport = text === 'sanitary_yes'
+				state.sanitaryExpDate = text === 'sanitary_yes' ? new Date() : null
+				state.inputType = 'sanitary_exp_date'
+				await ctx.reply(
+					'📅 Введите дату окончания действия санитарного паспорта (ДД.ММ.ГГГГ):',
+				)
+				break
+
+			case 'sanitary_exp_date':
+				try {
+					const [day, month, year] = text.split('.').map(Number)
+					const date = new Date(year, month - 1, day)
+
+					if (isNaN(date.getTime())) {
+						await ctx.reply('❌ Введите корректную дату в формате ДД.ММ.ГГГГ')
+						return
+					}
+
+					state.sanitaryExpDate = date
+					// Завершаем регистрацию
+					await this.completeRegistration(ctx, state)
+				} catch (error) {
+					await ctx.reply('❌ Введите дату в формате ДД.ММ.ГГГГ')
+				}
+				break
+
+			case 'address':
+				state.address = text
+				await this.completeRegistration(ctx, state)
+				break
 		}
 
 		this.registrationStates.set(userId, state)
@@ -364,52 +386,102 @@ export class TelegramAuthService {
 		await this.completeRegistration(ctx, state)
 	}
 
-	private async completeRegistration(ctx: Context, state: any) {
-		const userId = ctx.from.id
-
+	public async completeRegistration(ctx: Context, state: RegistrationState) {
 		try {
-			// Хешируем пароль
 			const hashedPassword = await bcrypt.hash(state.password, 10)
 
-			// Создаем пользователя напрямую
-			const user = await this.prisma.user.create({
-				data: {
-					email: state.email,
-					password: hashedPassword,
-					name: state.name,
-					phone: state.phone,
-					address: state.address,
-					role: state.role.toUpperCase(),
-					telegramId: userId.toString(),
-					mercuryNumber: state.mercuryNumber,
-					buyerType: state.buyerType as BuyerType,
-					isVerified: false,
-				},
+			// Проверяем существует ли пользователь
+			const existingUser = await this.prisma.user.findUnique({
+				where: { telegramId: ctx.from.id.toString() },
 			})
 
+			if (existingUser) {
+				// Если пользователь существует - обновляем его данные
+				const user = await this.prisma.user.update({
+					where: { telegramId: ctx.from.id.toString() },
+					data: {
+						email: state.email,
+						password: hashedPassword,
+						name: state.name,
+						phone: state.phone,
+						address: state.address,
+						role: state.role as Role,
+						buyerType: state.buyerType as BuyerType,
+						inn: state.inn,
+						ogrn: state.ogrn,
+						mercuryNumber: state.mercuryNumber,
+						// Создаем транспортное средство, если это перевозчик
+						...(state.role === 'CARRIER' && {
+							vehicles: {
+								create: {
+									type: state.vehicleType,
+									brand: state.vehicleBrand,
+									model: state.vehicleModel,
+									year: state.vehicleYear,
+									capacity: state.vehicleCapacity,
+									licensePlate: state.vehicleLicensePlate,
+									vin: state.vehicleVin || null,
+									hasCattleExp: state.hasCattleExp || false,
+									cattleExpYears: state.cattleExpYears || 0,
+									equipment: state.equipment || [],
+									workingRegions: state.workingRegions || [],
+									sanitaryPassport: state.sanitaryPassport || false,
+									sanitaryExpDate: state.sanitaryExpDate || null,
+								},
+							},
+						}),
+					},
+				})
+			} else {
+				// Если пользователь не существует - создаем нового
+				const user = await this.prisma.user.create({
+					data: {
+						email: state.email,
+						password: hashedPassword,
+						name: state.name,
+						phone: state.phone,
+						address: state.address,
+						role: state.role as Role,
+						telegramId: ctx.from.id.toString(),
+						buyerType: state.buyerType as BuyerType,
+						inn: state.inn,
+						ogrn: state.ogrn,
+						mercuryNumber: state.mercuryNumber,
+						...(state.role === 'CARRIER' && {
+							vehicles: {
+								create: {
+									type: state.vehicleType,
+									brand: state.vehicleBrand,
+									model: state.vehicleModel,
+									year: state.vehicleYear,
+									capacity: state.vehicleCapacity,
+									licensePlate: state.vehicleLicensePlate,
+									vin: state.vehicleVin || null,
+									hasCattleExp: state.hasCattleExp || false,
+									cattleExpYears: state.cattleExpYears || 0,
+									equipment: state.equipment || [],
+									workingRegions: state.workingRegions || [],
+									sanitaryPassport: state.sanitaryPassport || false,
+									sanitaryExpDate: state.sanitaryExpDate || null,
+								},
+							},
+						}),
+					},
+				})
+			}
+
 			// Очищаем состояние регистрации
-			this.registrationStates.delete(userId)
+			this.registrationStates.delete(ctx.from.id)
 
 			// Отправляем сообщение об успешной регистрации
-			await ctx.reply(
-				'✅ Регистрация успешно завершена!\n\n' +
-					'Ваша заявка отправлена на модерацию. ' +
-					'После проверки администратором вы получите уведомление и сможете войти в систему.',
-				{
-					reply_markup: {
-						inline_keyboard: [
-							[{ text: '🔑 Войти', callback_data: 'login' }],
-							[{ text: '« На главную', callback_data: 'start' }],
-						],
-					},
-				},
-			)
-
-			// Уведомляем администраторов о новой регистрации
-			await this.notifyAdminsAboutRegistration(user)
+			await ctx.reply('✅ Регистрация успешно завершена!')
+			await this.showMainMenu(ctx)
 		} catch (error) {
-			console.error('Ошибка при создании пользователя:', error)
-			await ctx.reply('❌ Произошла ошибка при регистрации. Попробуйте позже.')
+			console.error('Ошибка при завершении регистрации:', error)
+			await ctx.reply(
+				'❌ Произошла ошибка при регистрации. Попробуйте еще раз.',
+			)
+			throw error
 		}
 	}
 
@@ -452,7 +524,7 @@ export class TelegramAuthService {
 	private async checkOgrn(ogrn: string): Promise<boolean> {
 		try {
 			// Проверяем формат ОГРН
-			const ogrnRegex = /^\d{13}$|^\d{15}$/
+			const ogrnRegex = /^\d{13}$/
 			if (!ogrnRegex.test(ogrn)) {
 				return false
 			}
@@ -627,152 +699,283 @@ export class TelegramAuthService {
 	}
 
 	async handleRoleSelection(ctx: Context, role: string) {
-		try {
-			const userId = ctx.from.id
-
-			// Инициализируем состояние, если его нет
-			if (!this.registrationStates.has(userId)) {
-				this.registrationStates.set(userId, {
-					role: null,
-					userType: null,
-					entityType: null,
-					inputType: null,
-					email: null,
-					name: null,
-					phone: null,
-					address: null,
-					inn: null,
-					ogrn: null,
-					mercuryNumber: null,
-					password: null,
-					buyerType: null,
-				})
-			}
-
-			const state = this.registrationStates.get(userId)
-			console.log('Current state:', state) // Добавим лог для отладки
-
-			// Преобразуем роль в правильный формат
-			let userRole: 'BUYER' | 'SUPPLIER' | 'CARRIER'
-			switch (role.toUpperCase()) {
-				case 'BUYER':
-					userRole = 'BUYER'
-					break
-				case 'SUPPLIER':
-					userRole = 'SUPPLIER'
-					break
-				case 'CARRIER':
-					userRole = 'CARRIER'
-					break
-				default:
-					await ctx.reply('❌ Некорректная роль')
-					return
-			}
-
-			// Сохраняем роль в состоянии
-			state.role = userRole
-			this.registrationStates.set(userId, state)
-			console.log('Updated state:', this.registrationStates.get(userId)) // Добавим лог для отладки
-
-			// Запрашиваем тип организации в зависимости от роли
-			if (userRole === 'BUYER') {
-				await ctx.reply('Выберите тип организации:', {
-					reply_markup: {
-						inline_keyboard: [
-							[
-								{ text: '👤 Частное лицо', callback_data: 'user_type_PRIVATE' },
-								{ text: '🏡 КФХ', callback_data: 'user_type_FARM' },
-							],
-							[
-								{
-									text: '🏭 С/х предприятие',
-									callback_data: 'user_type_AGRICULTURAL',
-								},
-								{
-									text: '🏢 Мясокомбинат',
-									callback_data: 'user_type_MEAT_FACTORY',
-								},
-							],
-							[
-								{
-									text: '🐄 Откормочная площадка',
-									callback_data: 'user_type_FEEDLOT',
-								},
-								{
-									text: '📋 Участник гранта',
-									callback_data: 'user_type_GRANT_MEMBER',
-								},
-							],
-						],
-					},
-				})
-			} else if (userRole === 'SUPPLIER') {
-				await ctx.reply('Выберите тип поставщика:', {
-					reply_markup: {
-						inline_keyboard: [
-							[
-								{
-									text: '👤 Физическое лицо',
-									callback_data: 'supplier_type_individual',
-								},
-								{
-									text: '🏢 Организация',
-									callback_data: 'supplier_type_organization',
-								},
-							],
-						],
-					},
-				})
-			} else {
-				// Для перевозчиков сразу запрашиваем email
-				state.inputType = 'email'
-				this.registrationStates.set(userId, state)
-				await ctx.reply('📧 Введите ваш email:')
-			}
-		} catch (error) {
-			console.error('Ошибка при выборе роли:', error)
-			await ctx.reply('❌ Произошла ошибка при выборе роли')
+		const userId = ctx.from.id
+		const state: RegistrationState = {
+			role: role,
+			userType: null,
+			entityType: null,
+			inputType: null,
+			email: null,
+			name: null,
+			phone: null,
+			address: null,
+			inn: null,
+			ogrn: null,
+			mercuryNumber: null,
+			password: null,
+			buyerType: null,
 		}
+
+		if (role === 'CARRIER') {
+			await ctx.reply('Выберите тип регистрации:', {
+				reply_markup: {
+					inline_keyboard: [
+						[
+							{
+								text: '👤 Физическое лицо',
+								callback_data: 'carrier_type_PRIVATE',
+							},
+							{
+								text: '🏢 Организация',
+								callback_data: 'carrier_type_ORGANIZATION',
+							},
+						],
+					],
+				},
+			})
+		} else if (role === 'BUYER') {
+			await ctx.reply('Выберите тип покупателя:', {
+				reply_markup: {
+					inline_keyboard: [
+						[
+							{
+								text: '👤 Частное лицо',
+								callback_data: 'buyer_type_PRIVATE',
+							},
+							{
+								text: '🌾 КФХ',
+								callback_data: 'buyer_type_FARM',
+							},
+						],
+						[
+							{
+								text: '🏭 С/х предприятие',
+								callback_data: 'buyer_type_AGRICULTURAL',
+							},
+							{
+								text: '🥩 Мясокомбинат',
+								callback_data: 'buyer_type_MEAT_FACTORY',
+							},
+						],
+						[
+							{
+								text: '🐮 Откормочная площадка',
+								callback_data: 'buyer_type_FEEDLOT',
+							},
+							{
+								text: '📋 Участник гранта',
+								callback_data: 'buyer_type_GRANT_MEMBER',
+							},
+						],
+					],
+				},
+			})
+		} else if (role === 'SUPPLIER') {
+			await ctx.reply('Выберите тип поставщика:', {
+				reply_markup: {
+					inline_keyboard: [
+						[
+							{
+								text: '👤 Физическое лицо',
+								callback_data: 'supplier_type_INDIVIDUAL',
+							},
+							{
+								text: '🏢 Организация',
+								callback_data: 'supplier_type_ORGANIZATION',
+							},
+						],
+					],
+				},
+			})
+		}
+
+		this.registrationStates.set(userId, state)
 	}
 
-	// Добавим новый обработчик для типа поставщика
-	async handleSupplierTypeSelection(ctx: Context, type: string) {
-		try {
-			const userId = ctx.from.id
-			const state = this.registrationStates.get(userId)
+	async handleUserTypeSelection(ctx: Context, type: string) {
+		const userId = ctx.from.id
+		const state = this.registrationStates.get(userId)
 
-			if (!state) {
-				await ctx.reply('❌ Пожалуйста, начните регистрацию заново')
-				return
-			}
+		if (!state) {
+			await ctx.reply('❌ Пожалуйста, начните регистрацию заново')
+			return
+		}
 
-			state.entityType = type
-			this.registrationStates.set(userId, state)
+		state.userType = type
 
-			if (type === 'INDIVIDUAL') {
-				// Для физ.лиц сразу переходим к вводу ИНН
-				state.inputType = 'inn'
-				await ctx.reply(
-					'📝 Введите ваш ИНН:\n\n' +
-						'ИНН должен содержать 12 цифр\n' +
-						'Пример: 500100732259',
-				)
-			} else if (type === 'ORGANIZATION') {
-				// Для организаций даем выбор между ИНН и ОГРН
-				await ctx.reply('Выберите тип идентификатора:', {
+		// Только частное лицо и участник гранта идут сразу к email
+		if (type === 'PRIVATE' || type === 'GRANT_MEMBER') {
+			state.inputType = 'email'
+			await ctx.reply('📧 Введите ваш email:')
+		} else {
+			// Все остальные типы (КФХ, С/х предприятие, Мясокомбинат, Откормочная площадка, Организация)
+			await ctx.reply('Выберите тип идентификатора:', {
+				reply_markup: {
+					inline_keyboard: [
+						[
+							{ text: '📝 ИНН', callback_data: 'input_inn' },
+							{ text: '📋 ОГРН', callback_data: 'input_ogrn' },
+						],
+					],
+				},
+			})
+		}
+
+		this.registrationStates.set(userId, state)
+	}
+
+	async handleVehicleInput(
+		ctx: Context,
+		text: string,
+		state: RegistrationState,
+	) {
+		switch (state.inputType) {
+			case 'vehicle_type':
+				state.vehicleType = text as VehicleType
+				state.inputType = 'vehicle_brand'
+				await ctx.reply('🚛 Введите марку транспортного средства:')
+				break
+
+			case 'vehicle_brand':
+				state.vehicleBrand = text
+				state.inputType = 'vehicle_model'
+				await ctx.reply('📝 Введите модель транспортного средства:')
+				break
+
+			case 'vehicle_model':
+				state.vehicleModel = text
+				state.inputType = 'vehicle_year'
+				await ctx.reply('📅 Введите год выпуска:')
+				break
+
+			case 'vehicle_year':
+				const year = parseInt(text)
+				if (isNaN(year) || year < 1970 || year > new Date().getFullYear()) {
+					await ctx.reply('❌ Введите корректный год выпуска')
+					return
+				}
+				state.vehicleYear = year
+				state.inputType = 'vehicle_capacity'
+				await ctx.reply('🔢 Введите вместимость (количество голов КРС):')
+				break
+
+			case 'vehicle_capacity':
+				const capacity = parseInt(text)
+				if (isNaN(capacity) || capacity <= 0) {
+					await ctx.reply('❌ Введите корректную вместимость')
+					return
+				}
+				state.vehicleCapacity = capacity
+				state.inputType = 'vehicle_license'
+				await ctx.reply('🚗 Введите государственный номер:')
+				break
+
+			case 'vehicle_license':
+				state.vehicleLicensePlate = text
+				state.inputType = 'vehicle_vin'
+				await ctx.reply('🔍 Введите VIN номер (можно пропустить):', {
+					reply_markup: {
+						inline_keyboard: [
+							[{ text: '⏩ Пропустить', callback_data: 'skip_vin' }],
+						],
+					},
+				})
+				break
+
+			case 'vehicle_vin':
+				if (text !== 'skip') {
+					state.vehicleVin = text
+				}
+				state.inputType = 'cattle_exp'
+				await ctx.reply('🚛 Есть ли у вас опыт перевозки КРС?', {
 					reply_markup: {
 						inline_keyboard: [
 							[
-								{ text: '📝 ИНН', callback_data: 'input_inn' },
-								{ text: '📋 ОГРН', callback_data: 'input_ogrn' },
+								{ text: '✅ Да', callback_data: 'cattle_exp_yes' },
+								{ text: '❌ Нет', callback_data: 'cattle_exp_no' },
 							],
 						],
 					},
 				})
-			}
-		} catch (error) {
-			console.error('Ошибка при выборе типа поставщика:', error)
-			await ctx.reply('❌ Произошла ошибка при обработке запроса')
+				break
+
+			case 'cattle_exp_years':
+				const years = parseInt(text)
+				if (isNaN(years) || years < 0) {
+					await ctx.reply('❌ Введите корректное количество лет')
+					return
+				}
+				state.cattleExpYears = years
+				state.inputType = 'equipment'
+				await ctx.reply('🔧 Выберите имеющееся оборудование:', {
+					reply_markup: {
+						inline_keyboard: [
+							[
+								{ text: '💧 Поилки', callback_data: 'eq_water' },
+								{ text: '💨 Вентиляция', callback_data: 'eq_vent' },
+							],
+							[
+								{ text: '🌡️ Контроль температуры', callback_data: 'eq_temp' },
+								{ text: '📹 Видеонаблюдение', callback_data: 'eq_cctv' },
+							],
+							[
+								{ text: '📍 GPS-трекер', callback_data: 'eq_gps' },
+								{ text: '🛗 Погрузочная рампа', callback_data: 'eq_ramp' },
+							],
+							[{ text: '➡️ Далее', callback_data: 'equipment_done' }],
+						],
+					},
+				})
+				break
+
+			case 'working_regions':
+				state.workingRegions = text.split(',').map(r => r.trim())
+				state.inputType = 'sanitary'
+				await ctx.reply('📋 Есть ли у вас санитарный паспорт на транспорт?', {
+					reply_markup: {
+						inline_keyboard: [
+							[
+								{ text: '✅ Да', callback_data: 'sanitary_yes' },
+								{ text: '❌ Нет', callback_data: 'sanitary_no' },
+							],
+						],
+					},
+				})
+				break
+
+			case 'sanitary':
+				state.sanitaryPassport = text === 'sanitary_yes'
+				state.sanitaryExpDate = text === 'sanitary_yes' ? new Date() : null
+				state.inputType = 'sanitary_exp_date'
+				await ctx.reply(
+					'📅 Введите дату окончания действия санитарного паспорта (ДД.ММ.ГГГГ):',
+				)
+				break
+
+			case 'sanitary_exp_date':
+				try {
+					const [day, month, year] = text.split('.').map(Number)
+					const date = new Date(year, month - 1, day)
+
+					if (isNaN(date.getTime())) {
+						await ctx.reply('❌ Введите корректную дату в формате ДД.ММ.ГГГГ')
+						return
+					}
+
+					state.sanitaryExpDate = date
+					// Завершаем регистрацию
+					await this.completeRegistration(ctx, state)
+				} catch (error) {
+					await ctx.reply('❌ Введите дату в формате ДД.ММ.ГГГГ')
+				}
+				break
+
+			case 'address':
+				state.address = text
+				await this.completeRegistration(ctx, state)
+				break
+
+			// ... остальные case
 		}
 	}
 
@@ -989,25 +1192,6 @@ export class TelegramAuthService {
 		this.authStates.set(userId, state)
 	}
 
-	async handleUserTypeSelection(ctx: Context, userType: string) {
-		const userId = ctx.from.id
-		const state = await this.getAuthState(userId)
-
-		if (!state) {
-			await ctx.reply('❌ Пожалуйста, начните регистрацию заново')
-			return
-		}
-
-		// Сохраняем тип пользователя
-		state.buyerType = userType
-		await this.updateAuthState(userId, state)
-
-		// Для всех типов пользователей запрашиваем email
-		state.inputType = 'email'
-		await this.updateAuthState(userId, state)
-		await ctx.reply('📧 Введите ваш email:')
-	}
-
 	// Добавим метод для обновления состояния регистрации
 	async updateRegistrationState(userId: number, state: RegistrationState) {
 		this.registrationStates.set(userId, state)
@@ -1023,5 +1207,82 @@ export class TelegramAuthService {
 				inline_keyboard: [[{ text: '📱 Меню', callback_data: 'menu' }]],
 			},
 		})
+	}
+
+	@Action(/eq_.*/)
+	async handleEquipmentSelection(@Ctx() ctx: Context) {
+		try {
+			await ctx.answerCbQuery()
+			const callbackQuery = ctx.callbackQuery as any
+			const equipment = callbackQuery.data.replace('eq_', '')
+			const userId = ctx.from.id
+			const state = await this.getRegistrationState(userId)
+
+			if (state) {
+				state.equipment = state.equipment || []
+
+				// Преобразуем callback в enum
+				const equipmentMap = {
+					water: Equipment.WATER_SYSTEM,
+					vent: Equipment.VENTILATION,
+					temp: Equipment.TEMPERATURE_CONTROL,
+					cctv: Equipment.CCTV,
+					gps: Equipment.GPS_TRACKER,
+					ramp: Equipment.LOADING_RAMP,
+				}
+
+				const equipmentEnum =
+					equipmentMap[equipment as keyof typeof equipmentMap]
+				if (!equipmentEnum) return
+
+				const equipmentIndex = state.equipment.indexOf(equipmentEnum)
+				if (equipmentIndex === -1) {
+					state.equipment.push(equipmentEnum)
+				} else {
+					state.equipment.splice(equipmentIndex, 1)
+				}
+
+				await this.updateRegistrationState(userId, state)
+
+				const keyboard = [
+					[
+						{
+							text: `${state.equipment.includes(Equipment.WATER_SYSTEM) ? '✅' : '💧'} Поилки`,
+							callback_data: 'eq_water',
+						},
+						{
+							text: `${state.equipment.includes(Equipment.VENTILATION) ? '✅' : '💨'} Вентиляция`,
+							callback_data: 'eq_vent',
+						},
+					],
+					[
+						{
+							text: `${state.equipment.includes(Equipment.TEMPERATURE_CONTROL) ? '✅' : '🌡️'} Контроль температуры`,
+							callback_data: 'eq_temp',
+						},
+						{
+							text: `${state.equipment.includes(Equipment.CCTV) ? '✅' : '📹'} Видеонаблюдение`,
+							callback_data: 'eq_cctv',
+						},
+					],
+					[
+						{
+							text: `${state.equipment.includes(Equipment.GPS_TRACKER) ? '✅' : '📍'} GPS-трекер`,
+							callback_data: 'eq_gps',
+						},
+						{
+							text: `${state.equipment.includes(Equipment.LOADING_RAMP) ? '✅' : '🛗'} Погрузочная рампа`,
+							callback_data: 'eq_ramp',
+						},
+					],
+					[{ text: '➡️ Далее', callback_data: 'equipment_done' }],
+				]
+
+				await ctx.editMessageReplyMarkup({ inline_keyboard: keyboard })
+			}
+		} catch (error) {
+			console.error('Ошибка при выборе оборудования:', error)
+			await ctx.reply('❌ Произошла ошибка при обработке запроса')
+		}
 	}
 }
