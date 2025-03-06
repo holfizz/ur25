@@ -6,31 +6,21 @@ import axios from 'axios'
 export class CozeService {
 	private readonly apiUrl = 'https://api.coze.com/open_api/v2/chat'
 
-	constructor(private configService: ConfigService) {}
+	constructor(private configService: ConfigService) {
+		this.apiUrl = this.configService.get('COZE_API_URL') || this.apiUrl
+	}
 
 	// Метод для общего общения с ИИ
 	async generateResponse(context: string, question: string): Promise<string> {
-		console.log('context', context)
-		console.log('question', question)
 		try {
-			// Проверяем размер запроса
-			if (context.length > 10000) {
-				console.warn(
-					`Запрос слишком большой (${context.length} байт), обрезаем до 10000 байт`,
-				)
-				context = context.substring(0, 10000)
-			}
-
-			console.log('Отправляем запрос в Coze API...')
-			console.log('Размер контекста:', context.length)
-			console.log('Размер вопроса:', question.length)
-
+			// Объединяем контекст и вопрос в один запрос
+			const fullQuery = `${context}\n\nВопрос: ${question}`
 			const response = await axios.post(
 				this.apiUrl,
 				{
-					bot_id: this.configService.get('COZE_ANALYZER_BOT_ID'),
+					bot_id: this.configService.get('COZE_BOT_ID'),
 					user: 'telegram_user',
-					query: question,
+					query: fullQuery,
 					stream: false,
 				},
 				{
@@ -43,7 +33,7 @@ export class CozeService {
 				},
 			)
 
-			console.log('Получен ответ от Coze API:', response.status)
+			console.log('Получен ответ от Coze API:', response)
 
 			if (
 				response.data &&
@@ -59,13 +49,21 @@ export class CozeService {
 				}
 
 				return response.data.messages[response.data.messages.length - 1].content
-			} else {
-				console.error('Неверный формат ответа от Coze API:', response.data)
-				return 'Извините, не удалось получить ответ от ИИ.'
 			}
+
+			// Если не удалось найти ответ в ожидаемом формате
+			console.error('Неверный формат ответа от Coze API:', response.data)
+			return 'Извините, не удалось получить ответ от ИИ. Попробуйте переформулировать вопрос.'
 		} catch (error) {
-			this.handleApiError(error)
-			return 'Произошла ошибка при обращении к ИИ. Пожалуйста, попробуйте позже.'
+			console.error('Ошибка при запросе к Coze API:', {
+				message: error.message,
+				url: this.apiUrl,
+				config: error.config,
+				response: error.response?.data,
+			})
+
+			// Возвращаем понятное сообщение об ошибке вместо выброса исключения
+			return 'Извините, произошла ошибка при обращении к ИИ. Пожалуйста, попробуйте позже.'
 		}
 	}
 
@@ -125,16 +123,14 @@ export class CozeService {
 
 	// Вспомогательный метод для обработки ошибок API
 	private handleApiError(error: any): void {
-		if (error.response) {
-			console.error(
-				'Ошибка API Coze:',
-				error.response.status,
-				error.response.data,
-			)
-		} else if (error.request) {
-			console.error('Нет ответа от API Coze:', error.request)
+		if (axios.isAxiosError(error)) {
+			console.error('Ошибка Axios:', {
+				status: error.response?.status,
+				data: error.response?.data,
+				message: error.message,
+			})
 		} else {
-			console.error('Ошибка при настройке запроса к Coze API:', error.message)
+			console.error('Неизвестная ошибка:', error)
 		}
 	}
 

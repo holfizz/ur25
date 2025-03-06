@@ -273,51 +273,15 @@ export class TelegramUpdate {
 	@On('text')
 	async handleText(@Ctx() ctx: Context) {
 		try {
-			const text = (ctx.message as any).text
-			const userId = ctx.from.id
+			// Проверяем, что сообщение имеет текст
+			if ('text' in ctx.message) {
+				const text = ctx.message.text
 
-			// Проверяем, находится ли пользователь в процессе создания объявления
-			const offerState = this.offerService.getOfferState(userId)
-			if (offerState && offerState.inputType) {
-				await this.offerService.handleOfferInput(ctx, text)
-				return
+				// Проверяем, есть ли активное состояние для пользователя
+				await this.offerService.handleText(ctx, text)
 			}
-
-			// Проверяем, находится ли пользователь в процессе входа
-			const loginState = this.authService.getLoginState(userId)
-			if (loginState) {
-				await this.authService.handleLoginInput(ctx, text)
-				return
-			}
-
-			// Проверяем, находится ли пользователь в процессе регистрации
-			const registrationState = this.authService.getRegistrationState(userId)
-			if (registrationState) {
-				await this.authService.handleTextInput(ctx, text)
-				return
-			}
-
-			// Проверяем, находится ли пользователь в процессе создания запроса
-			const requestState = this.requestService.getRequestState(userId)
-			if (requestState) {
-				await this.requestService.handleRequestInput(ctx, text)
-				return
-			}
-
-			// Если пользователь не в процессе входа, регистрации или создания запроса
-			await ctx.reply('❌ Пожалуйста, сначала авторизуйтесь.', {
-				reply_markup: {
-					inline_keyboard: [
-						[
-							{ text: '🔑 Войти', callback_data: 'login' },
-							{ text: '📝 Регистрация', callback_data: 'register' },
-						],
-					],
-				},
-			})
 		} catch (error) {
 			console.error('Ошибка при обработке текстового сообщения:', error)
-			await ctx.reply('❌ Произошла ошибка при обработке сообщения')
 		}
 	}
 
@@ -327,27 +291,44 @@ export class TelegramUpdate {
 		const userId = ctx.from.id
 		const action = callbackQuery.data
 
-		// Проверяем, начинается ли callback с view_offer_
-		if (action.startsWith('view_offer_')) {
+		// Используем регулярные выражения для проверки callback-данных
+
+		// Обработка просмотра объявления
+		if (/^view_offer_[0-9a-f-]+$/.test(action)) {
 			const offerId = action.replace('view_offer_', '')
 			await this.offerService.handleViewOffer(ctx, offerId)
 			return
 		}
 
-		// Проверяем, начинается ли callback с browse_offers_
-		if (action.startsWith('browse_offers_')) {
+		// Обработка запроса контактов
+		if (/^contact_request_[0-9a-f-]+$/.test(action)) {
+			const offerId = action.replace('contact_request_', '')
+			await this.offerService.handleContactRequest(ctx, offerId)
+			return
+		}
+
+		// Обработка расчета стоимости
+		if (/^calculate_price_[0-9a-f-]+$/.test(action)) {
+			const offerId = action.replace('calculate_price_', '')
+			await this.offerService.handleCalculatePrice(ctx, offerId)
+			return
+		}
+
+		// Обработка вопроса к объявлению
+		if (/^ask_question_[0-9a-f-]+$/.test(action)) {
+			const offerId = action.replace('ask_question_', '')
+			await this.offerService.handleAskQuestion(ctx, offerId)
+			return
+		}
+
+		// Обработка просмотра списка объявлений
+		if (/^browse_offers_\d+$/.test(action)) {
 			const page = parseInt(action.replace('browse_offers_', ''))
 			await this.offerService.handleBrowseOffers(ctx, page)
 			return
 		}
 
-		// Проверяем, начинается ли callback с view_request_
-		if (action.startsWith('view_request_')) {
-			const requestId = parseInt(action.replace('view_request_', ''))
-			await this.requestService.showRequestDetails(ctx, requestId)
-			return
-		}
-
+		// Остальные обработчики в switch...
 		switch (action) {
 			case 'add_comment_':
 				const commentRequestId = parseInt(
@@ -378,20 +359,17 @@ export class TelegramUpdate {
 				return
 			}
 
-			case 'calculate_price_': {
-				const calcOfferId = callbackQuery.data.replace('calculate_price_', '')
-				await this.offerService.handleCalculatePrice(ctx, calcOfferId)
-				return
-			}
+			case 'calculate_price_':
+				await this.handleCalculatePriceInSwitch(ctx)
+				break
 
-			case 'request_contacts_': {
+			case 'request_contacts_':
 				const contactOfferId = callbackQuery.data.replace(
 					'request_contacts_',
 					'',
 				)
 				await this.requestService.handleRequestContacts(ctx)
 				return
-			}
 
 			case 'view_offer_':
 				await this.offerService.handleViewOffer(
@@ -934,6 +912,18 @@ export class TelegramUpdate {
 				const requestId = parseInt(action.replace('view_request_', ''))
 				await this.requestService.showRequestDetails(ctx, requestId)
 				return
+
+			case 'contact_request_':
+				await this.handleContactRequestInSwitch(ctx)
+				break
+
+			case 'calculate_price_':
+				await this.handleCalculatePriceInSwitch(ctx)
+				break
+
+			case 'ask_question_':
+				await this.handleAskQuestionInSwitch(ctx)
+				break
 
 			default:
 				console.log('Неизвестный callback:', action)
@@ -2700,57 +2690,6 @@ ${offer.customsUnion ? '✅ В реестре Таможенного союза\
 		}
 	}
 
-	// Добавим обработчик для расчета цены
-	@Action(/calculate_price_.*/)
-	async handleCalculatePrice(@Ctx() ctx: Context) {
-		try {
-			await ctx.answerCbQuery()
-
-			// Извлекаем ID объявления из callback_data
-			//@ts-ignore
-			const offerId = ctx.callbackQuery.data.replace('calculate_price_', '')
-
-			// Получаем объявление из базы данных
-			const offer = await this.prisma.offer.findUnique({
-				where: { id: offerId },
-			})
-
-			if (!offer) {
-				await ctx.reply('❌ Объявление не найдено или было удалено')
-				return
-			}
-
-			const userId = ctx.from.id
-
-			// Сохраняем состояние для расчета цены
-			const calculateState = {
-				offerId,
-				inputType: 'calculate_quantity',
-				priceType: offer.priceType,
-				pricePerHead: offer.pricePerHead,
-				pricePerKg: offer.pricePerKg,
-				photos: [], // Добавляем пустые массивы
-				videos: [],
-			}
-
-			this.offerService.updateOfferState(userId, calculateState)
-
-			// Запрашиваем количество в зависимости от типа цены
-			if (offer.priceType === 'PER_HEAD') {
-				await ctx.reply(
-					'🔢 Введите количество голов, которое вы хотите приобрести:',
-				)
-			} else {
-				await ctx.reply(
-					'⚖️ Введите количество килограммов, которое вы хотите приобрести:',
-				)
-			}
-		} catch (error) {
-			console.error('Ошибка при расчете цены:', error)
-			await ctx.reply('❌ Произошла ошибка при обработке запроса')
-		}
-	}
-
 	@Action(/^page_(\d+)$/)
 	async handlePagination(@Ctx() ctx: Context) {
 		try {
@@ -3084,6 +3023,83 @@ ${offer.customsUnion ? '✅ В реестре Таможенного союза\
 			}
 		} catch (error) {
 			console.error('Ошибка при обработке сообщения:', error)
+		}
+	}
+
+	// Добавляем обработчики для новых callback-запросов
+	@Action(/^contact_request_(.+)$/)
+	async handleContactRequest(@Ctx() ctx: Context) {
+		try {
+			// Проверяем, что callbackQuery имеет свойство data
+			if ('data' in ctx.callbackQuery) {
+				const offerId = ctx.callbackQuery.data.replace('contact_request_', '')
+				await this.offerService.handleContactRequest(ctx, offerId)
+			}
+		} catch (error) {
+			console.error('Ошибка при обработке запроса на контакты:', error)
+			await ctx.reply('❌ Произошла ошибка при обработке запроса на контакты')
+		}
+	}
+
+	@Action(/^calculate_price_(.+)$/)
+	async handleCalculatePrice(@Ctx() ctx: Context) {
+		try {
+			if ('data' in ctx.callbackQuery) {
+				const offerId = ctx.callbackQuery.data.replace('calculate_price_', '')
+				await this.offerService.handleCalculatePrice(ctx, offerId)
+			}
+		} catch (error) {
+			console.error('Ошибка при обработке запроса на расчет стоимости:', error)
+			await ctx.reply('❌ Произошла ошибка при расчете стоимости')
+		}
+	}
+
+	@Action(/^ask_question_(.+)$/)
+	async handleAskQuestion(@Ctx() ctx: Context) {
+		try {
+			if ('data' in ctx.callbackQuery) {
+				const offerId = ctx.callbackQuery.data.replace('ask_question_', '')
+				await this.offerService.handleAskQuestion(ctx, offerId)
+			}
+		} catch (error) {
+			console.error('Ошибка при обработке запроса на вопрос:', error)
+			await ctx.reply('❌ Произошла ошибка при обработке вопроса')
+		}
+	}
+
+	async handleContactRequestInSwitch(@Ctx() ctx: Context) {
+		try {
+			await ctx.answerCbQuery()
+			const callbackQuery = ctx.callbackQuery as any
+			const offerId = callbackQuery.data.replace('contact_request_', '')
+			await this.offerService.handleContactRequest(ctx, offerId)
+		} catch (error) {
+			console.error('Ошибка при обработке запроса на контакты:', error)
+			await ctx.reply('❌ Произошла ошибка при обработке запроса на контакты')
+		}
+	}
+
+	async handleCalculatePriceInSwitch(@Ctx() ctx: Context) {
+		try {
+			await ctx.answerCbQuery()
+			const callbackQuery = ctx.callbackQuery as any
+			const offerId = callbackQuery.data.replace('calculate_price_', '')
+			await this.offerService.handleCalculatePrice(ctx, offerId)
+		} catch (error) {
+			console.error('Ошибка при обработке запроса на расчет стоимости:', error)
+			await ctx.reply('❌ Произошла ошибка при расчете стоимости')
+		}
+	}
+
+	async handleAskQuestionInSwitch(@Ctx() ctx: Context) {
+		try {
+			await ctx.answerCbQuery()
+			const callbackQuery = ctx.callbackQuery as any
+			const offerId = callbackQuery.data.replace('ask_question_', '')
+			await this.offerService.handleAskQuestion(ctx, offerId)
+		} catch (error) {
+			console.error('Ошибка при обработке запроса на вопрос:', error)
+			await ctx.reply('❌ Произошла ошибка при обработке вопроса')
 		}
 	}
 }
