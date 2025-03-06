@@ -11,6 +11,11 @@ import { TelegramRequestService } from './services/request.service'
 import { TelegramClient } from './telegram.client'
 import { TelegramService } from './telegram.service'
 
+// Определяем расширенный тип контекста с match
+interface MyContext extends Context {
+	match?: RegExpExecArray
+}
+
 @Update()
 export class TelegramUpdate {
 	constructor(
@@ -322,9 +327,30 @@ export class TelegramUpdate {
 		const userId = ctx.from.id
 		const action = callbackQuery.data
 
+		// Проверяем, начинается ли callback с view_offer_
+		if (action.startsWith('view_offer_')) {
+			const offerId = action.replace('view_offer_', '')
+			await this.offerService.handleViewOffer(ctx, offerId)
+			return
+		}
+
+		// Проверяем, начинается ли callback с browse_offers_
+		if (action.startsWith('browse_offers_')) {
+			const page = parseInt(action.replace('browse_offers_', ''))
+			await this.offerService.handleBrowseOffers(ctx, page)
+			return
+		}
+
+		// Проверяем, начинается ли callback с view_request_
+		if (action.startsWith('view_request_')) {
+			const requestId = parseInt(action.replace('view_request_', ''))
+			await this.requestService.showRequestDetails(ctx, requestId)
+			return
+		}
+
 		switch (action) {
 			case 'add_comment_':
-				const requestId = parseInt(
+				const commentRequestId = parseInt(
 					callbackQuery.data.replace('add_comment_', ''),
 				)
 				await ctx.reply('📝 Введите ваш комментарий к запросу:')
@@ -335,7 +361,7 @@ export class TelegramUpdate {
 				}
 
 				offerState.inputType = 'waiting_for_comment'
-				offerState.contactRequestId = requestId.toString()
+				offerState.contactRequestId = commentRequestId.toString()
 				this.offerService.updateOfferState(userId, offerState)
 				return
 
@@ -367,11 +393,12 @@ export class TelegramUpdate {
 				return
 			}
 
-			case 'view_offer_': {
-				const viewOfferId = callbackQuery.data.replace('view_offer_', '')
-				await this.offerService.handleViewOffer(ctx, viewOfferId)
-				return
-			}
+			case 'view_offer_':
+				await this.offerService.handleViewOffer(
+					ctx,
+					callbackQuery.data.replace('view_offer_', ''),
+				)
+				break
 
 			case 'gut_yes':
 				await ctx.answerCbQuery()
@@ -440,12 +467,7 @@ export class TelegramUpdate {
 				break
 
 			case 'browse_offers':
-			case 'browse_offers_':
-				const page =
-					callbackQuery.data === 'browse_offers'
-						? 1
-						: parseInt(callbackQuery.data.replace('browse_offers_', ''))
-				await this.offerService.handleBrowseOffers(ctx, page)
+				await this.offerService.handleBrowseOffers(ctx, 1)
 				break
 
 			case 'approve_comment':
@@ -899,6 +921,20 @@ export class TelegramUpdate {
 				}
 				break
 
+			case 'request_cattle_CALVES':
+			case 'request_cattle_BULL_CALVES':
+			case 'request_cattle_HEIFERS':
+			case 'request_cattle_BREEDING_HEIFERS':
+			case 'request_cattle_BULLS':
+			case 'request_cattle_COWS':
+				await this.handleRequestCattleType(ctx)
+				break
+
+			case 'view_request_':
+				const requestId = parseInt(action.replace('view_request_', ''))
+				await this.requestService.showRequestDetails(ctx, requestId)
+				return
+
 			default:
 				console.log('Неизвестный callback:', action)
 		}
@@ -966,12 +1002,17 @@ export class TelegramUpdate {
 	}
 
 	@Action(/browse_offers_(\d+)/)
-	async handleBrowseOffersPage(@Ctx() ctx: Context) {
-		//@ts-ignore
-		const match = ctx.callbackQuery.data.match(/browse_offers_(\d+)/)
-		if (match) {
-			const page = parseInt(match[1])
+	async handleBrowseOffersPage(@Ctx() ctx: MyContext) {
+		try {
+			// Извлекаем номер страницы из callback_data
+			const page = parseInt(ctx.match[1])
+			console.log(`Просмотр объявлений, страница: ${page}`)
+
+			// Вызываем метод для отображения списка объявлений
 			await this.offerService.handleBrowseOffers(ctx, page)
+		} catch (error) {
+			console.error('Ошибка при просмотре списка объявлений:', error)
+			await ctx.reply('❌ Произошла ошибка при загрузке списка объявлений')
 		}
 	}
 
@@ -2601,147 +2642,29 @@ ${offer.customsUnion ? '✅ В реестре Таможенного союза\
 		}
 	}
 
-	@Action(/view_offer_.*/)
-	async handleViewOffer(@Ctx() ctx: Context) {
+	@Action(/view_offer_(.+)/)
+	async handleViewOffer(@Ctx() ctx: MyContext) {
 		try {
-			await ctx.answerCbQuery()
-
 			// Извлекаем ID объявления из callback_data
-			//@ts-ignore
-			const offerId = ctx.callbackQuery.data.replace('view_offer_', '')
+			const offerId = ctx.match[1]
+			console.log(`Просмотр объявления с ID: ${offerId}`)
 
-			// Получаем объявление из базы данных со всеми связанными данными
+			// Получаем объявление из базы данных
 			const offer = await this.prisma.offer.findUnique({
 				where: { id: offerId },
 				include: {
 					images: true,
-					user: {
-						select: {
-							name: true,
-							phone: true,
-							mercuryNumber: true,
-						},
-					},
+					user: true,
 				},
 			})
 
 			if (!offer) {
-				await ctx.reply('❌ Объявление не найдено или было удалено')
+				await ctx.reply('❌ Объявление не найдено')
 				return
 			}
 
-			// Формируем сообщение с данными объявления
-			let statusText = ''
-			switch (offer.status) {
-				case 'APPROVED':
-					statusText = '🟢 Активно'
-					break
-				case 'PENDING':
-					statusText = '🟡 На модерации'
-					break
-				case 'ARCHIVED':
-					statusText = '⚪ Архивировано'
-					break
-				case 'REJECTED':
-					statusText = '🔴 Отклонено'
-					break
-			}
-
-			const cattleTypeText = {
-				CALVES: '🐮 Телята',
-				BULL_CALVES: '🐂 Бычки',
-				HEIFERS: '🐄 Телки',
-				BREEDING_HEIFERS: '🐄 Нетели',
-				BULLS: '🐂 Быки',
-				COWS: '🐄 Коровы',
-			}[offer.cattleType]
-
-			const purposeText = {
-				COMMERCIAL: '💼 Коммерческое',
-				BREEDING: '🧬 Племенное',
-			}[offer.purpose]
-
-			const offerMessage = `
-${statusText}
-
-📋 <b>${offer.title}</b>
-
-${cattleTypeText} - ${offer.breed || 'Порода не указана'}
-🔢 Количество: ${offer.quantity} голов
-⚖️ Вес: ${offer.weight} кг
-🌱 Возраст: ${offer.age} мес.
-🎯 Назначение: ${purposeText}
-💰 Цена: ${
-				offer.priceType === 'PER_HEAD'
-					? offer.pricePerHead > 0
-						? `${offer.pricePerHead} ₽/гол`
-						: `${offer.pricePerKg} ₽/кг`
-					: `${offer.pricePerKg} ₽/кг`
-			}
-📍 Регион: ${offer.region || 'Не указан'}
-${offer.description ? `\n📝 Описание: ${offer.description}` : ''}
-${offer.gktDiscount ? `\n🎯 Скидка ЖКТ: ${offer.gktDiscount}%` : ''}
-${offer.customsUnion ? '\n🌍 Для стран ТС' : ''}
-
-📅 Создано: ${new Date(offer.createdAt).toLocaleDateString('ru-RU')}`
-
-			// Определяем кнопки в зависимости от роли пользователя
-			const userId = ctx.from.id
-			const user = await this.prisma.user.findUnique({
-				where: { telegramId: userId.toString() },
-			})
-
-			const buttons = []
-
-			// Добавляем кнопку запроса контактов для покупателей
-			if (user && user.role === 'BUYER') {
-				buttons.push([
-					{
-						text: '📞 Запросить контакты',
-						callback_data: `request_contacts_${offerId}`,
-					},
-				])
-
-				// Добавляем кнопки AI-вопроса и расчета цены для покупателей
-				buttons.push([
-					{
-						text: '🤖 Спросить AI',
-						callback_data: `ask_ai_${offerId}`,
-					},
-					{
-						text: '🧮 Рассчитать цену',
-						callback_data: `calculate_price_${offerId}`,
-					},
-				])
-			}
-
-			// Добавляем кнопку возврата
-			buttons.push([{ text: '« Назад', callback_data: 'browse_offers' }])
-
-			// Отправляем изображения, если они есть
-			if (offer.images && offer.images.length > 0) {
-				// Отправляем первое изображение с текстом и кнопками
-				await ctx.replyWithPhoto(offer.images[0].url, {
-					caption: offerMessage,
-					parse_mode: 'HTML',
-					reply_markup: {
-						inline_keyboard: buttons,
-					},
-				})
-
-				// Отправляем остальные изображения, если их больше одного
-				for (let i = 1; i < Math.min(offer.images.length, 5); i++) {
-					await ctx.replyWithPhoto(offer.images[i].url)
-				}
-			} else {
-				// Если нет изображений, отправляем только текст
-				await ctx.reply(offerMessage, {
-					parse_mode: 'HTML',
-					reply_markup: {
-						inline_keyboard: buttons,
-					},
-				})
-			}
+			// Вызываем метод для отображения объявления
+			await this.offerService.showOfferDetails(ctx, offer)
 		} catch (error) {
 			console.error('Ошибка при просмотре объявления:', error)
 			await ctx.reply('❌ Произошла ошибка при загрузке объявления')
@@ -3116,6 +3039,51 @@ ${offer.customsUnion ? '\n🌍 Для стран ТС' : ''}
 				error,
 			)
 			await ctx.reply('❌ Произошла ошибка при обработке запроса')
+		}
+	}
+
+	// Добавляем обработчик для выбора типа скота в запросе
+	@Action(/request_cattle_.*/)
+	async handleRequestCattleType(@Ctx() ctx: Context) {
+		try {
+			await ctx.answerCbQuery()
+
+			// Извлекаем тип скота из callback_data
+			const callbackQuery = ctx.callbackQuery as any
+			const cattleType = callbackQuery.data.replace(
+				'request_cattle_',
+				'',
+			) as CattleType
+
+			// Передаем в сервис запросов
+			await this.requestService.handleCattleTypeSelection(ctx, cattleType)
+		} catch (error) {
+			console.error('Ошибка при выборе типа скота:', error)
+			await ctx.reply('❌ Произошла ошибка при обработке запроса')
+		}
+	}
+
+	@On('message')
+	async handleMessage(@Ctx() ctx: Context) {
+		try {
+			// Проверяем, является ли сообщение текстовым
+			if ('text' in ctx.message) {
+				const text = ctx.message.text
+				const userId = ctx.from.id
+
+				// Сначала проверяем, обрабатывается ли запрос
+				const isRequestHandled = await this.requestService.handleRequestInput(
+					ctx,
+					text,
+				)
+				if (isRequestHandled) {
+					return
+				}
+
+				// Остальная логика обработки сообщений...
+			}
+		} catch (error) {
+			console.error('Ошибка при обработке сообщения:', error)
 		}
 	}
 }

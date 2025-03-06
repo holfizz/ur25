@@ -139,6 +139,7 @@ model User {
 
   vehicles    Vehicle[]
   companyType String? // ИП, ООО, etc.
+  TopOffer    TopOffer[]
 
   @@map("users")
 }
@@ -214,6 +215,8 @@ model Offer {
   matches         Match[]
   contactRequests ContactRequest[]
   deals           Deal[]
+
+  topOffer TopOffer?
 
   @@map("offers")
 }
@@ -375,4 +378,16 @@ model Vehicle {
   sanitaryExpDate  DateTime?
   user             User        @relation(fields: [userId], references: [id])
   userId           String
+}
+
+model TopOffer {
+  id        String   @id @default(uuid())
+  offerId   String   @unique
+  offer     Offer    @relation(fields: [offerId], references: [id], onDelete: Cascade)
+  status    String   @default("REGULAR")
+  score     Int      @default(0)
+  position  Int      @default(0)
+  createdAt DateTime @default(now())
+  userId    String // Добавляем поле userId как обязательное
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 }

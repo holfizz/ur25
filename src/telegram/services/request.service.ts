@@ -34,6 +34,7 @@ interface RequestState {
 	userId?: string
 	isExport?: boolean // Для экспорта
 	isBreeding?: boolean // Для племенного разведения
+	deliveryDate?: string // Добавляем поле для даты доставки
 }
 
 interface MatchWithRelations extends Match {
@@ -315,7 +316,8 @@ export class TelegramRequestService {
 		const title = user.role === 'BUYER' ? 'Мои запросы' : 'Запросы покупателей'
 
 		const requests = await this.prisma.request.findMany({
-			where: user.role === 'BUYER' ? { userId: user.id } : { status: 'ACTIVE' },
+			where:
+				user.role === 'SUPPLIER' ? { userId: user.id } : { status: 'ACTIVE' },
 			include: {
 				matches: true,
 				user: true,
@@ -557,149 +559,103 @@ ${user.role === 'SUPPLIER' ? `👤 Покупатель: ${request.user.name}\n`
 
 	async handleRequestInput(ctx: Context, text: string) {
 		const userId = ctx.from.id
-		const state = this.requestStates.get(userId)
+
+		// Получаем текущее состояние и логируем
+		const state = this.getRequestState(userId)
+		console.log(`Обработка ввода для пользователя ${userId}, состояние:`, state)
 
 		if (!state) {
-			await ctx.reply('❌ Пожалуйста, начните создание запроса заново')
-			return
+			console.log(`Состояние не найдено для пользователя ${userId}`)
+			return false
 		}
 
-		// Обработка ввода региона
-		if (state.inputType === 'region') {
-			if (text.length < 3) {
-				await ctx.reply(
-					'❌ Пожалуйста, введите корректное название региона (минимум 3 символа)',
-				)
-				return
+		try {
+			switch (state.inputType) {
+				case 'breed':
+					state.breed = text
+					state.inputType = 'quantity'
+					this.requestStates.set(userId, state)
+					await ctx.reply('🔢 Введите необходимое количество голов:')
+					return true
+
+				case 'quantity':
+					const quantity = parseInt(text)
+					if (isNaN(quantity) || quantity <= 0) {
+						await ctx.reply('❌ Пожалуйста, введите корректное число')
+						return true
+					}
+					state.quantity = quantity
+					state.inputType = 'weight'
+					this.requestStates.set(userId, state)
+					await ctx.reply('⚖️ Введите желаемый вес (в кг):')
+					return true
+
+				case 'weight':
+					const weight = parseInt(text)
+					if (isNaN(weight) || weight <= 0) {
+						await ctx.reply('❌ Пожалуйста, введите корректное число')
+						return true
+					}
+					state.weight = weight
+					state.inputType = 'age'
+					this.requestStates.set(userId, state)
+					await ctx.reply('🗓️ Введите возраст КРС (в месяцах):')
+					return true
+
+				case 'age':
+					const age = parseInt(text)
+					if (isNaN(age) || age <= 0) {
+						await ctx.reply('❌ Пожалуйста, введите корректное число')
+						return true
+					}
+					state.age = age
+					state.inputType = 'delivery_date'
+					this.requestStates.set(userId, state)
+					await ctx.reply(
+						'📅 Введите желаемые сроки поставки (например, "до 15.06.2023"):',
+					)
+					return true
+
+				case 'delivery_date':
+					state.deliveryDate = text
+					state.inputType = 'price'
+					this.requestStates.set(userId, state)
+					await ctx.reply('💰 Введите желаемую цену (в рублях):')
+					return true
+
+				case 'price':
+					const price = parseInt(text)
+					if (isNaN(price) || price <= 0) {
+						await ctx.reply('❌ Пожалуйста, введите корректное число')
+						return true
+					}
+					state.price = price
+					state.inputType = 'region'
+					this.requestStates.set(userId, state)
+					await ctx.reply('🌍 Введите регион покупки:')
+					return true
+
+				case 'region':
+					state.region = text
+					state.inputType = 'location'
+					this.requestStates.set(userId, state)
+					await ctx.reply('📍 Введите место доставки:')
+					return true
+
+				case 'location':
+					state.location = text
+					// Завершаем создание запроса
+					await this.createRequest(ctx)
+					return true
+
+				default:
+					return false
 			}
-
-			state.region = text
-			state.inputType = 'location' // Меняем на запрос местоположения вместо породы
-			this.requestStates.set(userId, state)
-			await ctx.reply('📍 Введите место доставки:')
-			return
-		}
-
-		// Обработка ввода местоположения
-		if (state.inputType === 'location') {
-			if (text.length < 3) {
-				await ctx.reply(
-					'❌ Пожалуйста, введите корректное местоположение (минимум 3 символа)',
-				)
-				return
-			}
-
-			state.location = text
-			state.inputType = 'breed' // После местоположения переходим к породе
-			this.requestStates.set(userId, state)
-			await ctx.reply('🐮 Введите породу КРС:')
-			return
-		}
-
-		// Обработка ввода породы
-		if (state.inputType === 'breed') {
-			if (text.length < 2) {
-				await ctx.reply(
-					'❌ Пожалуйста, введите корректное название породы (минимум 2 символа)',
-				)
-				return
-			}
-
-			state.breed = text
-			state.inputType = 'quantity'
-			this.requestStates.set(userId, state)
-			await ctx.reply('📊 Введите необходимое количество голов:')
-			return
-		}
-
-		// Обработка ввода количества
-		if (state.inputType === 'quantity') {
-			const quantity = parseInt(text)
-			if (isNaN(quantity) || quantity <= 0) {
-				await ctx.reply(
-					'❌ Пожалуйста, введите корректное количество (целое положительное число)',
-				)
-				return
-			}
-
-			state.quantity = quantity
-			state.inputType = 'weight'
-			this.requestStates.set(userId, state)
-			await ctx.reply('⚖️ Введите желаемый вес (в кг):')
-			return
-		}
-
-		// Обработка ввода веса
-		if (state.inputType === 'weight') {
-			const weight = parseInt(text)
-			if (isNaN(weight) || weight <= 0) {
-				await ctx.reply(
-					'❌ Пожалуйста, введите корректный вес (целое положительное число)',
-				)
-				return
-			}
-
-			state.weight = weight
-			state.inputType = 'age' // Добавляем ввод возраста
-			this.requestStates.set(userId, state)
-			await ctx.reply('🔢 Введите возраст КРС (в месяцах):')
-			return
-		}
-
-		// Обработка ввода возраста
-		if (state.inputType === 'age') {
-			const age = parseInt(text)
-			if (isNaN(age) || age <= 0) {
-				await ctx.reply(
-					'❌ Пожалуйста, введите корректный возраст (целое положительное число)',
-				)
-				return
-			}
-
-			state.age = age
-			state.inputType = 'deadline' // Добавляем ввод сроков
-			this.requestStates.set(userId, state)
-			await ctx.reply(
-				'📅 Введите желаемые сроки поставки (например, "до 15.06.2023"):',
-			)
-			return
-		}
-
-		// Обработка ввода сроков
-		if (state.inputType === 'deadline') {
-			state.deadline = text
-			state.inputType = 'price'
-			this.requestStates.set(userId, state)
-			await ctx.reply('💰 Введите желаемую цену (в рублях):')
-			return
-		}
-
-		// Обработка ввода цены
-		if (state.inputType === 'price') {
-			const price = parseFloat(text)
-			if (isNaN(price) || price <= 0) {
-				await ctx.reply('❌ Введите корректную цену')
-				return true
-			}
-			state.price = price
-			this.requestStates.set(userId, state)
-
-			// Создаем запрос
-			await this.createRequest(ctx)
+		} catch (error) {
+			console.error('Ошибка при обработке ввода запроса:', error)
+			await ctx.reply('❌ Произошла ошибка при обработке вашего ввода')
 			return true
 		}
-
-		// Обработка ввода описания
-		if (state.inputType === 'description') {
-			state.description = text
-			this.requestStates.set(userId, state)
-
-			// Создаем запрос
-			await this.createRequest(ctx)
-			return true
-		}
-
-		return false
 	}
 
 	// Добавляем метод для инициализации состояния запроса
@@ -712,50 +668,44 @@ ${user.role === 'SUPPLIER' ? `👤 Покупатель: ${request.user.name}\n`
 		try {
 			const userId = ctx.from.id
 
-			// Инициализируем новое состояние запроса
+			// Создаем новое состояние запроса без photos и videos
 			const requestState: RequestState = {
 				inputType: 'cattle_type',
 			}
 
+			// Сохраняем состояние
 			this.requestStates.set(userId, requestState)
 
-			console.log('Создаем кнопки для выбора типа КРС')
-
-			const keyboard = [
-				[
-					{ text: '🐄 Коровы', callback_data: 'request_cattle_COWS' },
-					{ text: '🐂 Быки', callback_data: 'request_cattle_BULLS' },
-				],
-				[
-					{ text: '🐮 Телки', callback_data: 'request_cattle_HEIFERS' },
-					{
-						text: '🐄 Нетели',
-						callback_data: 'request_cattle_BREEDING_HEIFERS',
-					},
-				],
-				[
-					{ text: '🐮 Телята', callback_data: 'request_cattle_CALVES' },
-					{
-						text: '🐂 Бычки',
-						callback_data: 'request_cattle_BULL_CALVES',
-					},
-				],
-			]
-
-			console.log('Кнопки:', JSON.stringify(keyboard))
-
-			await ctx.reply(
-				'📝 <b>Создание нового запроса на покупку КРС</b>\n\n' +
-					'Пожалуйста, выберите тип КРС:',
-				{
-					parse_mode: 'HTML',
-					reply_markup: {
-						inline_keyboard: keyboard,
-					},
-				},
+			// Логируем для отладки
+			console.log(
+				`Создано новое состояние запроса для пользователя ${userId}:`,
+				requestState,
 			)
+
+			// Отправляем сообщение с выбором типа скота
+			await ctx.reply('🐄 Выберите тип КРС:', {
+				reply_markup: {
+					inline_keyboard: [
+						[
+							{ text: '🐄 Коровы', callback_data: 'request_cattle_COWS' },
+							{ text: '🐂 Быки', callback_data: 'request_cattle_BULLS' },
+						],
+						[
+							{ text: '🐮 Телки', callback_data: 'request_cattle_HEIFERS' },
+							{
+								text: '🐄 Нетели',
+								callback_data: 'request_cattle_BREEDING_HEIFERS',
+							},
+						],
+						[
+							{ text: '🐮 Телята', callback_data: 'request_cattle_CALVES' },
+							{ text: '🐂 Бычки', callback_data: 'request_cattle_BULL_CALVES' },
+						],
+					],
+				},
+			})
 		} catch (error) {
-			console.error('Ошибка при создании запроса:', error)
+			console.error('Ошибка при начале создания запроса:', error)
 			await ctx.reply('❌ Произошла ошибка при создании запроса')
 		}
 	}
@@ -800,6 +750,20 @@ ${user.role === 'SUPPLIER' ? `👤 Покупатель: ${request.user.name}\n`
 			// Переводим тип КРС и цель на русский язык
 			const russianTitle = `${this.translateCattleType(state.cattleType)} ${this.translatePurpose(state.purpose)}`
 
+			// Преобразуем строку даты в формат ISO
+			let deadlineDate = null
+			if (state.deliveryDate) {
+				try {
+					// Пытаемся преобразовать строку в формат даты
+					const parts = state.deliveryDate.split('.')
+					if (parts.length === 3) {
+						deadlineDate = new Date(`${parts[2]}-${parts[1]}-${parts[0]}`)
+					}
+				} catch (e) {
+					console.error('Ошибка при преобразовании даты:', e)
+				}
+			}
+
 			// Создаем запрос в базе данных
 			const request = await this.prisma.request.create({
 				data: {
@@ -812,6 +776,7 @@ ${user.role === 'SUPPLIER' ? `👤 Покупатель: ${request.user.name}\n`
 					region: state.region,
 					breed: state.breed || 'Не указано',
 					status: 'ACTIVE',
+					deadline: deadlineDate, // Используем преобразованную дату
 					user: { connect: { id: user.id } },
 				},
 			})
@@ -856,6 +821,11 @@ ${user.role === 'SUPPLIER' ? `👤 Покупатель: ${request.user.name}\n`
 
 	getRequestState(userId: number): RequestState | undefined {
 		return this.requestStates.get(userId)
+	}
+
+	// Добавляем метод для обновления состояния запроса
+	updateRequestState(userId: number, state: RequestState): void {
+		this.requestStates.set(userId, state)
 	}
 
 	// Добавляем метод для отображения деталей запроса
@@ -1499,45 +1469,32 @@ ${user.role === 'SUPPLIER' ? `👤 Покупатель: ${request.user.name}\n`
 		}
 	}
 
-	// Добавим метод для обработки выбора типа КРС
-	async handleCattleTypeSelection(ctx: Context, cattleType: string) {
-		console.log('Вызван handleCattleTypeSelection с типом:', cattleType)
+	// Метод для обработки выбора типа скота
+	async handleCattleTypeSelection(ctx: Context, cattleType: CattleType) {
 		const userId = ctx.from.id
-		const state = this.requestStates.get(userId)
 
-		console.log('Текущее состояние:', state)
+		// Получаем текущее состояние и логируем для отладки
+		const state = this.getRequestState(userId)
+		console.log(`Получено состояние для пользователя ${userId}:`, state)
 
 		if (!state) {
 			await ctx.reply('❌ Пожалуйста, начните создание запроса заново')
 			return
 		}
 
-		state.cattleType = cattleType as CattleType
-		state.inputType = 'purpose'
-		this.requestStates.set(userId, state)
-		console.log('Обновленное состояние:', this.requestStates.get(userId))
+		// Сохраняем выбранный тип скота
+		state.cattleType = cattleType
+		state.inputType = 'breed' // Переходим к вводу породы
 
-		// Запрашиваем цель покупки
-		await ctx.reply('🎯 Выберите цель покупки КРС:', {
-			reply_markup: {
-				inline_keyboard: [
-					[
-						{ text: '🥩 Мясо', callback_data: 'request_purpose_MEAT' },
-						{
-							text: '🐄 Разведение',
-							callback_data: 'request_purpose_BREEDING',
-						},
-					],
-					[
-						{
-							text: '🥛 Молочное производство',
-							callback_data: 'request_purpose_DAIRY',
-						},
-						{ text: '🍖 Откорм', callback_data: 'request_purpose_FATTENING' },
-					],
-				],
-			},
-		})
+		// Сохраняем обновленное состояние и логируем
+		this.requestStates.set(userId, state)
+		console.log(
+			`Обновлено состояние для пользователя ${userId}:`,
+			this.requestStates.get(userId),
+		)
+
+		// Отображаем сообщение с запросом породы
+		await ctx.reply('🐄 Введите породу скота:')
 	}
 
 	// Обработка выбора цели
@@ -1775,8 +1732,8 @@ ${user.role === 'SUPPLIER' ? `👤 Покупатель: ${request.user.name}\n`
 			const requestState = {
 				offerId,
 				inputType: 'contact_request_comment',
-				photos: [],
-				videos: [],
+				photos: [], // Добавляем обязательные поля
+				videos: [], // Добавляем обязательные поля
 			}
 			this.offerService.updateOfferState(userId, requestState)
 

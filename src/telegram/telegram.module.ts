@@ -8,6 +8,7 @@ import { JwtService } from '@nestjs/jwt'
 import { TelegrafModule } from 'nestjs-telegraf'
 import { S3Service } from '../common/services/s3.service'
 import { PrismaService } from '../prisma.service'
+import { AiAnalysisService } from '../services/ai-analysis.service'
 import { CozeService } from '../services/coze.service'
 import { TelegramAuthService } from './services/auth.service'
 import { TelegramMessageService } from './services/message.service'
@@ -65,6 +66,7 @@ import { TelegramUpdate } from './telegram.update'
 		AuthService,
 		UserService,
 		MailService,
+		AiAnalysisService,
 	],
 	exports: [TelegramService, TelegramClient],
 })

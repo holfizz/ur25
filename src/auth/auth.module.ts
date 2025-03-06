@@ -1,5 +1,6 @@
 import { S3Service } from '@/common/services/s3.service'
 import { OfferService } from '@/offer/offer.service'
+import { AiAnalysisService } from '@/services/ai-analysis.service'
 import { CozeService } from '@/services/coze.service'
 import { TelegramAuthService } from '@/telegram/services/auth.service'
 import { TelegramMessageService } from '@/telegram/services/message.service'
@@ -72,6 +73,7 @@ import { MailService } from './mail.service'
 		TelegramMessageService,
 		TelegramProfileService,
 		CozeService,
+		AiAnalysisService,
 	],
 })
 export class AuthModule {}

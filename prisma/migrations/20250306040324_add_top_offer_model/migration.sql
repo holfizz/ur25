@@ -28,6 +28,12 @@ CREATE TYPE "OfferStatus" AS ENUM ('REGULAR', 'PREMIUM', 'SUPER_PREMIUM');
 -- CreateEnum
 CREATE TYPE "VerificationStatus" AS ENUM ('PENDING', 'APPROVED', 'REJECTED');
 
+-- CreateEnum
+CREATE TYPE "VehicleType" AS ENUM ('TRUCK', 'CATTLE_TRUCK');
+
+-- CreateEnum
+CREATE TYPE "Equipment" AS ENUM ('WATER_SYSTEM', 'VENTILATION', 'TEMPERATURE_CONTROL', 'CCTV', 'GPS_TRACKER', 'LOADING_RAMP');
+
 -- CreateTable
 CREATE TABLE "users" (
     "id" TEXT NOT NULL,
@@ -52,6 +58,7 @@ CREATE TABLE "users" (
     "rating" DOUBLE PRECISION NOT NULL DEFAULT 0,
     "lastAiAnalysis" TIMESTAMP(3),
     "lastLoginAt" TIMESTAMP(3),
+    "companyType" TEXT,
 
     CONSTRAINT "users_pkey" PRIMARY KEY ("id")
 );
@@ -238,11 +245,48 @@ CREATE TABLE "system_settings" (
     CONSTRAINT "system_settings_pkey" PRIMARY KEY ("key")
 );
 
+-- CreateTable
+CREATE TABLE "Vehicle" (
+    "id" TEXT NOT NULL,
+    "type" "VehicleType" NOT NULL,
+    "brand" TEXT NOT NULL,
+    "model" TEXT NOT NULL,
+    "year" INTEGER NOT NULL,
+    "capacity" INTEGER NOT NULL,
+    "licensePlate" TEXT NOT NULL,
+    "vin" TEXT,
+    "hasCattleExp" BOOLEAN NOT NULL DEFAULT false,
+    "cattleExpYears" INTEGER NOT NULL DEFAULT 0,
+    "equipment" "Equipment"[] DEFAULT ARRAY[]::"Equipment"[],
+    "workingRegions" TEXT[] DEFAULT ARRAY[]::TEXT[],
+    "sanitaryPassport" BOOLEAN NOT NULL DEFAULT false,
+    "sanitaryExpDate" TIMESTAMP(3),
+    "userId" TEXT NOT NULL,
+
+    CONSTRAINT "Vehicle_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "TopOffer" (
+    "id" TEXT NOT NULL,
+    "offerId" TEXT NOT NULL,
+    "status" TEXT NOT NULL,
+    "score" INTEGER NOT NULL,
+    "position" INTEGER NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "TopOffer_pkey" PRIMARY KEY ("id")
+);
+
 -- CreateIndex
 CREATE UNIQUE INDEX "users_email_key" ON "users"("email");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "users_telegramId_key" ON "users"("telegramId");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "TopOffer_offerId_key" ON "TopOffer"("offerId");
 
 -- AddForeignKey
 ALTER TABLE "requests" ADD CONSTRAINT "requests_userId_fkey" FOREIGN KEY ("userId") REFERENCES "users"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
@@ -303,3 +347,9 @@ ALTER TABLE "Deal" ADD CONSTRAINT "Deal_buyerId_fkey" FOREIGN KEY ("buyerId") RE
 
 -- AddForeignKey
 ALTER TABLE "Deal" ADD CONSTRAINT "Deal_sellerId_fkey" FOREIGN KEY ("sellerId") REFERENCES "users"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "Vehicle" ADD CONSTRAINT "Vehicle_userId_fkey" FOREIGN KEY ("userId") REFERENCES "users"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "TopOffer" ADD CONSTRAINT "TopOffer_offerId_fkey" FOREIGN KEY ("offerId") REFERENCES "offers"("id") ON DELETE CASCADE ON UPDATE CASCADE;
