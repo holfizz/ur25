@@ -107,7 +107,7 @@ async function main() {
 				images: {
 					create: [
 						{
-							url: `https://example.com/cattle-${i + 1}.jpg`,
+							url: `https://vetandlife.ru/wp-content/uploads/2019/10/0f5c5c294dd17093b697a8d9f7b23d60.jpg`,
 							key: `cattle-${i + 1}.jpg`,
 						},
 					],

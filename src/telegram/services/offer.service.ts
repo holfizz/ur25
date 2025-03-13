@@ -255,10 +255,51 @@ export class TelegramOfferService {
 
 			switch (state.inputType) {
 				case 'title':
-					state.title = text
-					state.inputType = 'description'
-					this.updateOfferState(userId, state)
-					await ctx.reply('📝 Введите описание объявления:')
+					try {
+						// Проверяем валидность названия
+						if (!text || text.length < 3) {
+							await ctx.reply(
+								'❌ Пожалуйста, введите корректное название объявления (минимум 3 символа)',
+							)
+							return
+						}
+
+						// Сохраняем название в состоянии
+						state.title = text
+
+						// Переходим к следующему шагу - запрос типа КРС
+						await ctx.reply('🐄 Выберите тип КРС:', {
+							reply_markup: {
+								inline_keyboard: [
+									[
+										{ text: '🐮 Коровы', callback_data: 'cattle_type_COWS' },
+										{ text: '🐂 Быки', callback_data: 'cattle_type_BULLS' },
+									],
+									[
+										{ text: '🐄 Нетели', callback_data: 'cattle_type_HEIFERS' },
+										{ text: '🥩 Бычки', callback_data: 'cattle_type_STEERS' },
+									],
+									[
+										{ text: '🐎 Телки', callback_data: 'cattle_type_CALVES' },
+										{
+											text: '🦬 Телята',
+											callback_data: 'cattle_type_YOUNGSTOCK',
+										},
+									],
+									[{ text: '« Отмена', callback_data: 'cancel_offer' }],
+								],
+							},
+						})
+
+						// Обновляем состояние
+						state.inputType = 'waiting_for_cattle_type'
+						this.offerStates.set(userId, state)
+					} catch (error) {
+						console.error('Ошибка при обработке названия:', error)
+						await ctx.reply(
+							'❌ Произошла ошибка при сохранении названия. Попробуйте еще раз.',
+						)
+					}
 					break
 
 				case 'description':
@@ -4001,6 +4042,50 @@ ${offer.customsUnion ? '\n🌍 Для стран ТС' : ''}`
 					} catch (error) {
 						console.error('Ошибка при обработке запроса контактов:', error)
 						await ctx.reply('❌ Произошла ошибка при обработке запроса')
+					}
+					break
+
+				case 'breed':
+					try {
+						// Проверяем валидность введенной породы
+						if (!text || text.length < 2) {
+							await ctx.reply(
+								'❌ Пожалуйста, введите корректное название породы (минимум 2 символа)',
+							)
+							return
+						}
+
+						// Сохраняем породу в состоянии
+						state.breed = text
+
+						// Переходим к следующему шагу - запрос назначения
+						await ctx.reply('🎯 Выберите назначение:', {
+							reply_markup: {
+								inline_keyboard: [
+									[
+										{ text: '🥩 Мясное', callback_data: 'purpose_MEAT' },
+										{ text: '🥛 Молочное', callback_data: 'purpose_DAIRY' },
+									],
+									[
+										{ text: '🔄 Племенное', callback_data: 'purpose_BREEDING' },
+										{
+											text: '🛠️ Товарное',
+											callback_data: 'purpose_COMMERCIAL',
+										},
+									],
+									[{ text: '« Отмена', callback_data: 'cancel_offer' }],
+								],
+							},
+						})
+
+						// Обновляем состояние
+						state.inputType = 'waiting_for_purpose'
+						this.offerStates.set(userId, state)
+					} catch (error) {
+						console.error('Ошибка при обработке породы:', error)
+						await ctx.reply(
+							'❌ Произошла ошибка при сохранении породы. Попробуйте еще раз.',
+						)
 					}
 					break
 

@@ -8,6 +8,7 @@ import {
 	Param,
 	Post,
 	Put,
+	Query,
 	UploadedFiles,
 	UseGuards,
 	UseInterceptors,
@@ -32,8 +33,8 @@ export class OfferController {
 	}
 
 	@Get()
-	async findAll() {
-		return this.offerService.findAll()
+	async findAll(@Query() query: Record<string, string>) {
+		return this.offerService.findAll(query)
 	}
 
 	@Get(':id')
@@ -67,5 +68,25 @@ export class OfferController {
 	@Post('reject/:id')
 	async rejectOffer(@Param('id') id: string) {
 		return this.offerService.rejectOffer(id)
+	}
+
+	@Get('regions')
+	async getRegions() {
+		return this.offerService.getRegions()
+	}
+
+	@Get('regions-with-count')
+	async getRegionsWithCount() {
+		return this.offerService.getRegionsWithCount()
+	}
+
+	@Get('price-ranges')
+	async getPriceRanges() {
+		return this.offerService.getPriceRanges()
+	}
+
+	@Get('breeds')
+	async getBreeds() {
+		return this.offerService.getBreeds()
 	}
 }

@@ -4,6 +4,7 @@ import { ScheduleModule } from '@nestjs/schedule'
 import { AuthModule } from './auth/auth.module'
 import { JwtStrategy } from './auth/jwt.strategy'
 import { S3Service } from './common/services/s3.service'
+import { OfferModule } from './offer/offer.module'
 import { PrismaService } from './prisma.service'
 import { AiAnalysisService } from './services/ai-analysis.service'
 import { CozeService } from './services/coze.service'
@@ -17,6 +18,7 @@ import { UserModule } from './user/user.module'
 		AuthModule,
 		UserModule,
 		TelegramModule,
+		OfferModule,
 	],
 	providers: [
 		PrismaService,
