@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common'
 import { Context, Markup, Telegraf } from 'telegraf'
 import { Message } from 'telegraf/typings/core/types/typegram'
 import { PrismaService } from '../prisma.service'
+import { AuthState } from './interfaces/states.interface'
 import { TelegramAuthService } from './services/auth.service'
 import { TelegramMessageService } from './services/message.service'
 import { TelegramOfferService } from './services/offer.service'
@@ -9,6 +10,7 @@ import { TelegramOfferService } from './services/offer.service'
 @Injectable()
 export class TelegramService {
 	private bot: Telegraf
+	private authStates: Map<number, AuthState> = new Map()
 
 	constructor(
 		private readonly prisma: PrismaService,
@@ -22,6 +24,80 @@ export class TelegramService {
 		this.bot.on('video', async ctx => {
 			await this.offerService.handleVideo(ctx)
 		})
+	}
+
+	public getAuthState(userId: number): AuthState | undefined {
+		return this.authStates.get(userId)
+	}
+
+	public setAuthState(userId: number, state: AuthState): void {
+		this.authStates.set(userId, state)
+	}
+
+	public clearAuthState(userId: number): void {
+		this.authStates.delete(userId)
+	}
+
+	public async handleEmailInput(ctx: Context, email: string): Promise<void> {
+		const userId = ctx.from.id
+		const user = await this.prisma.user.findUnique({
+			where: { email },
+		})
+
+		if (!user) {
+			await ctx.reply(
+				'❌ Пользователь с таким email не найден. Попробуйте снова.',
+			)
+			return
+		}
+
+		this.setAuthState(userId, { step: 'password', email })
+		await ctx.reply('🔑 Введите ваш пароль:')
+	}
+
+	public async handlePasswordInput(
+		ctx: Context,
+		password: string,
+	): Promise<void> {
+		const userId = ctx.from.id
+		const state = this.getAuthState(userId)
+
+		if (!state || !state.email) {
+			await ctx.reply(
+				'❌ Произошла ошибка. Пожалуйста, начните процесс входа заново.',
+			)
+			this.clearAuthState(userId)
+			return
+		}
+
+		const user = await this.prisma.user.findUnique({
+			where: { email: state.email },
+		})
+
+		if (!user) {
+			await ctx.reply('❌ Пользователь не найден')
+			this.clearAuthState(userId)
+			return
+		}
+
+		const isPasswordValid = await this.authService.validatePassword(
+			password,
+			user.password,
+		)
+
+		if (!isPasswordValid) {
+			await ctx.reply('❌ Неверный пароль. Попробуйте снова.')
+			return
+		}
+
+		await this.prisma.user.update({
+			where: { id: user.id },
+			data: { telegramId: userId.toString() },
+		})
+
+		this.clearAuthState(userId)
+		await ctx.reply('✅ Вы успешно вошли в систему!')
+		await this.handleMenu(ctx)
 	}
 
 	public async handleStart(ctx: Context) {
@@ -298,6 +374,25 @@ ${
 			await this.bot.telegram.sendMessage(chatId, message)
 		} catch (error) {
 			console.error('Error sending telegram message:', error)
+		}
+	}
+
+	public async handleTextMessage(ctx: Context): Promise<boolean> {
+		try {
+			const userId = ctx.from.id
+			const loginState = this.authService.getLoginState(userId)
+			const text = (ctx.message as any).text
+
+			if (loginState) {
+				await this.authService.handleLoginInput(ctx, text)
+				return true
+			}
+
+			return false
+		} catch (error) {
+			console.error('Ошибка при обработке текстового сообщения:', error)
+			await ctx.reply('❌ Произошла ошибка при обработке сообщения')
+			return false
 		}
 	}
 }

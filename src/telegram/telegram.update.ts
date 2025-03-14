@@ -211,25 +211,29 @@ export class TelegramUpdate {
 
 	@Action('input_inn')
 	async handleInputInn(@Ctx() ctx: Context) {
-		try {
-			await ctx.answerCbQuery()
-			const userId = ctx.from.id
-			await this.authService.setInputType(ctx, 'inn')
-		} catch (error) {
-			console.error('Ошибка при выборе ввода ИНН:', error)
-			await ctx.reply('❌ Произошла ошибка при обработке запроса')
+		const userId = ctx.from.id
+		const state = await this.authService.getRegistrationState(userId)
+
+		if (state) {
+			state.inputType = 'inn'
+			await this.authService.updateRegistrationState(userId, state)
+			await ctx.reply('📝 Введите ваш ИНН (10 или 12 цифр):')
+		} else {
+			await ctx.reply('❌ Пожалуйста, начните регистрацию заново')
 		}
 	}
 
 	@Action('input_ogrn')
 	async handleInputOgrn(@Ctx() ctx: Context) {
-		try {
-			await ctx.answerCbQuery()
-			const userId = ctx.from.id
-			await this.authService.setInputType(ctx, 'ogrn')
-		} catch (error) {
-			console.error('Ошибка при выборе ввода ОГРН:', error)
-			await ctx.reply('❌ Произошла ошибка при обработке запроса')
+		const userId = ctx.from.id
+		const state = await this.authService.getRegistrationState(userId)
+
+		if (state) {
+			state.inputType = 'ogrn'
+			await this.authService.updateRegistrationState(userId, state)
+			await ctx.reply('📝 Введите ваш ОГРН (13 цифр):')
+		} else {
+			await ctx.reply('❌ Пожалуйста, начните регистрацию заново')
 		}
 	}
 
@@ -271,17 +275,35 @@ export class TelegramUpdate {
 	}
 
 	@On('text')
-	async handleText(@Ctx() ctx: Context) {
+	async handleMessage(@Ctx() ctx: Context) {
 		try {
-			// Проверяем, что сообщение имеет текст
-			if ('text' in ctx.message) {
-				const text = ctx.message.text
+			const userId = ctx.from.id
+			const text = (ctx.message as any).text
 
-				// Проверяем, есть ли активное состояние для пользователя
-				await this.offerService.handleText(ctx, text)
+			// Проверяем, обработано ли сообщение как часть процесса входа
+			const isHandledByAuth = await this.telegramService.handleTextMessage(ctx)
+			if (isHandledByAuth) {
+				return
 			}
+
+			// Если сообщение не обработано как часть входа, проверяем другие состояния
+			const registrationState = this.authService.getRegistrationState(userId)
+			if (registrationState) {
+				await this.authService.handleTextInput(ctx, text)
+				return
+			}
+
+			// Если нет активных состояний, проверяем авторизацию
+			const isAuth = await this.checkAuth(ctx)
+			if (!isAuth) {
+				return
+			}
+
+			// Обработка обычных текстовых сообщений
+			await this.telegramService.handleTextInput(ctx)
 		} catch (error) {
-			console.error('Ошибка при обработке текстового сообщения:', error)
+			console.error('Ошибка при обработке сообщения:', error)
+			await ctx.reply('❌ Произошла ошибка при обработке сообщения')
 		}
 	}
 
@@ -2999,71 +3021,6 @@ ${offer.customsUnion ? '✅ В реестре Таможенного союза\
 		} catch (error) {
 			console.error('Ошибка при выборе типа скота:', error)
 			await ctx.reply('❌ Произошла ошибка при обработке запроса')
-		}
-	}
-
-	@On('message')
-	async handleMessage(@Ctx() ctx: Context) {
-		try {
-			// Проверяем, является ли сообщение текстовым
-			if ('text' in ctx.message) {
-				const text = ctx.message.text
-				const userId = ctx.from.id
-
-				// Сначала проверяем, обрабатывается ли запрос
-				const isRequestHandled = await this.requestService.handleRequestInput(
-					ctx,
-					text,
-				)
-				if (isRequestHandled) {
-					return
-				}
-
-				// Остальная логика обработки сообщений...
-			}
-		} catch (error) {
-			console.error('Ошибка при обработке сообщения:', error)
-		}
-	}
-
-	// Добавляем обработчики для новых callback-запросов
-	@Action(/^contact_request_(.+)$/)
-	async handleContactRequest(@Ctx() ctx: Context) {
-		try {
-			// Проверяем, что callbackQuery имеет свойство data
-			if ('data' in ctx.callbackQuery) {
-				const offerId = ctx.callbackQuery.data.replace('contact_request_', '')
-				await this.offerService.handleContactRequest(ctx, offerId)
-			}
-		} catch (error) {
-			console.error('Ошибка при обработке запроса на контакты:', error)
-			await ctx.reply('❌ Произошла ошибка при обработке запроса на контакты')
-		}
-	}
-
-	@Action(/^calculate_price_(.+)$/)
-	async handleCalculatePrice(@Ctx() ctx: Context) {
-		try {
-			if ('data' in ctx.callbackQuery) {
-				const offerId = ctx.callbackQuery.data.replace('calculate_price_', '')
-				await this.offerService.handleCalculatePrice(ctx, offerId)
-			}
-		} catch (error) {
-			console.error('Ошибка при обработке запроса на расчет стоимости:', error)
-			await ctx.reply('❌ Произошла ошибка при расчете стоимости')
-		}
-	}
-
-	@Action(/^ask_question_(.+)$/)
-	async handleAskQuestion(@Ctx() ctx: Context) {
-		try {
-			if ('data' in ctx.callbackQuery) {
-				const offerId = ctx.callbackQuery.data.replace('ask_question_', '')
-				await this.offerService.handleAskQuestion(ctx, offerId)
-			}
-		} catch (error) {
-			console.error('Ошибка при обработке запроса на вопрос:', error)
-			await ctx.reply('❌ Произошла ошибка при обработке вопроса')
 		}
 	}
 

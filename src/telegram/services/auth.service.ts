@@ -88,7 +88,7 @@ export class TelegramAuthService {
 						state.inn = text
 						state.inputType = 'email'
 						await ctx.reply(
-							'✅ ИНН проверен и подтвержден! Теперь введите ваш email:',
+							'✅ ИНН проверен и подтвержден!\n\n📧 Теперь введите ваш email:',
 						)
 					} else {
 						await ctx.reply('❌ Неверный ИНН или организация не активна')
@@ -105,7 +105,7 @@ export class TelegramAuthService {
 						state.ogrn = text
 						state.inputType = 'email'
 						await ctx.reply(
-							'✅ ОГРН проверен и подтвержден! Теперь введите ваш email:',
+							'✅ ОГРН проверен и подтвержден!\n\n📧 Теперь введите ваш email:',
 						)
 					} else {
 						await ctx.reply('❌ Неверный ОГРН или организация не активна')
@@ -488,68 +488,6 @@ export class TelegramAuthService {
 	private validatePhone(phone: string): boolean {
 		const phoneRegex = /^\+?[0-9]{10,15}$/
 		return phoneRegex.test(phone)
-	}
-
-	private async checkInn(inn: string): Promise<boolean> {
-		try {
-			// Проверяем формат ИНН
-			const innRegex = /^\d{10}$|^\d{12}$/
-			if (!innRegex.test(inn)) {
-				return false
-			}
-
-			const apiKey = this.configService.get('DATANEWTON_API_KEY')
-			const url = `https://api.datanewton.ru/v1/counterparty?key=${apiKey}&inn=${inn}`
-
-			const response = await fetch(url)
-			const data = await response.json()
-
-			if (data.code === 1) {
-				console.error('Контрагент не найден:', data.message)
-				return false
-			}
-
-			if (data && data.company && data.company.company_names) {
-				return data.company.status && data.company.status.active_status
-			} else {
-				console.error('Неизвестный ответ от API:', data)
-				return false
-			}
-		} catch (error) {
-			console.error('Ошибка при проверке ИНН через API:', error)
-			throw error
-		}
-	}
-
-	private async checkOgrn(ogrn: string): Promise<boolean> {
-		try {
-			// Проверяем формат ОГРН
-			const ogrnRegex = /^\d{13}$/
-			if (!ogrnRegex.test(ogrn)) {
-				return false
-			}
-
-			const apiKey = this.configService.get('DATANEWTON_API_KEY')
-			const url = `https://api.datanewton.ru/v1/counterparty?key=${apiKey}&ogrn=${ogrn}`
-
-			const response = await fetch(url)
-			const data = await response.json()
-
-			if (data.code === 1) {
-				console.error('Контрагент не найден:', data.message)
-				return false
-			}
-
-			if (data && data.company && data.company.company_names) {
-				return data.company.status && data.company.status.active_status
-			} else {
-				console.error('Неизвестный ответ от API:', data)
-				return false
-			}
-		} catch (error) {
-			console.error('Ошибка при проверке ОГРН через API:', error)
-			throw error
-		}
 	}
 
 	public getRegistrationState(userId: number) {
@@ -1007,8 +945,12 @@ export class TelegramAuthService {
 			const userId = ctx.from.id
 			const loginState = this.getLoginState(userId)
 
-			if (!loginState) return
+			if (!loginState) {
+				await ctx.reply('❌ Пожалуйста, начните процесс входа заново')
+				return
+			}
 
+			// Если email еще не введен
 			if (loginState.step === 'email') {
 				if (!this.validateEmail(text)) {
 					await ctx.reply(
@@ -1017,62 +959,53 @@ export class TelegramAuthService {
 					return
 				}
 
+				// Проверяем существование пользователя, но не сообщаем об ошибке
 				const user = await this.prisma.user.findUnique({
 					where: { email: text },
 				})
 
-				if (!user) {
-					await ctx.reply('❌ Пользователь с таким email не найден')
-					this.clearLoginState(userId)
-					return
-				}
-
-				this.setLoginState(userId, { email: text, step: 'password' })
+				// Сохраняем email и переходим к вводу пароля в любом случае
+				this.setLoginState(userId, {
+					email: text,
+					password: null,
+					step: 'password',
+				})
 				await ctx.reply('🔑 Введите пароль:')
 				return
 			}
 
+			// Если пароль еще не введен
 			if (loginState.step === 'password') {
-				// Проверяем пароль
 				const user = await this.prisma.user.findUnique({
 					where: { email: loginState.email },
 				})
 
-				if (!user) {
-					await ctx.reply('❌ Пользователь не найден')
+				// Если пользователь не найден или пароль неверный
+				if (!user || !(await bcrypt.compare(text, user.password))) {
+					await ctx.reply('❌ Неверный email или пароль')
 					this.clearLoginState(userId)
 					return
 				}
 
-				const isPasswordValid = await bcrypt.compare(text, user.password)
-
-				if (!isPasswordValid) {
-					await ctx.reply('❌ Неверный пароль')
+				if (!user.isVerified) {
+					await ctx.reply(
+						'⏳ Ваша учетная запись находится на модерации.\n' +
+							'Пожалуйста, дождитесь подтверждения администратором.\n\n' +
+							'Нажмите /start для возврата в главное меню.',
+					)
 					this.clearLoginState(userId)
 					return
 				}
 
-				// Обновляем telegramId, только если пользователь еще не привязан к другому аккаунту
-				const existingUser = await this.prisma.user.findUnique({
-					where: { telegramId: userId.toString() },
-				})
-
-				if (existingUser && existingUser.id !== user.id) {
-					// Если текущий пользователь уже привязан к другому аккаунту, отвязываем его
-					await this.prisma.user.update({
-						where: { id: existingUser.id },
-						data: { telegramId: null },
-					})
-				}
-
-				// Привязываем новый telegramId
+				// Обновляем telegramId пользователя
 				await this.prisma.user.update({
 					where: { id: user.id },
 					data: { telegramId: userId.toString() },
 				})
 
-				await this.showMainMenu(ctx) // Показываем меню сразу после успешного входа
+				// Очищаем состояние входа и показываем меню
 				this.clearLoginState(userId)
+				await this.showMainMenu(ctx)
 			}
 		} catch (error) {
 			console.error('Ошибка при обработке входа:', error)
@@ -1082,11 +1015,10 @@ export class TelegramAuthService {
 	}
 
 	async initLoginState(userId: number) {
-		console.log('Инициализация состояния входа для пользователя:', userId)
 		this.loginStates.set(userId, {
 			email: null,
 			password: null,
-			step: 'email', // Начинаем с ввода email
+			step: 'email',
 		})
 	}
 
@@ -1283,6 +1215,80 @@ export class TelegramAuthService {
 		} catch (error) {
 			console.error('Ошибка при выборе оборудования:', error)
 			await ctx.reply('❌ Произошла ошибка при обработке запроса')
+		}
+	}
+	private async checkInn(inn: string): Promise<boolean> {
+		try {
+			// Проверяем формат ИНН
+			const innRegex = /^\d{10}$|^\d{12}$/
+			if (!innRegex.test(inn)) {
+				return false
+			}
+
+			const apiKey = this.configService.get('DATANEWTON_API_KEY')
+			const url = `https://api.datanewton.ru/v1/counterparty?key=${apiKey}&inn=${inn}`
+
+			const response = await fetch(url)
+			const data = await response.json()
+
+			if (data.code === 1) {
+				console.error('Контрагент не найден:', data.message)
+				return false
+			}
+
+			if (data && data.company && data.company.company_names) {
+				return data.company.status && data.company.status.active_status
+			} else {
+				console.error('Неизвестный ответ от API:', data)
+				return false
+			}
+		} catch (error) {
+			console.error('Ошибка при проверке ИНН через API:', error)
+			throw error
+		}
+	}
+
+	private async checkOgrn(ogrn: string): Promise<boolean> {
+		try {
+			// Проверяем формат ОГРН
+			const ogrnRegex = /^\d{13}$|^\d{15}$/
+			if (!ogrnRegex.test(ogrn)) {
+				return false
+			}
+
+			const apiKey = this.configService.get('DATANEWTON_API_KEY')
+			const url = `https://api.datanewton.ru/v1/counterparty?key=${apiKey}&ogrn=${ogrn}`
+
+			const response = await fetch(url)
+			const data = await response.json()
+
+			if (data.code === 1) {
+				console.error('Контрагент не найден:', data.message)
+				return false
+			}
+
+			if (data && data.company && data.company.company_names) {
+				return data.company.status && data.company.status.active_status
+			} else {
+				console.error('Неизвестный ответ от API:', data)
+				return false
+			}
+		} catch (error) {
+			console.error('Ошибка при проверке ОГРН через API:', error)
+			throw error
+		}
+	}
+	// Добавляем публичный метод для проверки пароля
+	public async validatePassword(
+		plainPassword: string,
+		hashedPassword: string,
+	): Promise<boolean> {
+		try {
+			// Используем bcrypt для сравнения паролей
+			return await bcrypt.compare(plainPassword, hashedPassword)
+		} catch (error) {
+			console.error('Ошибка при проверке пароля:', error)
+			return false
 		}
 	}
 }
