@@ -89,4 +89,14 @@ export class OfferController {
 	async getBreeds() {
 		return this.offerService.getBreeds()
 	}
+
+	@Post(':id/request-contacts')
+	@UseGuards(JwtAuthGuard)
+	async requestContacts(
+		@Param('id') id: string,
+		@CurrentUser('id') userId: string,
+		@Body() data: { message: string },
+	) {
+		return this.offerService.requestContacts(id, userId, data.message)
+	}
 }

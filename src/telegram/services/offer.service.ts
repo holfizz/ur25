@@ -242,257 +242,218 @@ export class TelegramOfferService {
 	}
 
 	async handleOfferInput(ctx: Context, text: string) {
-		try {
-			const userId = ctx.from.id
-			const state = this.getOfferState(userId)
+		const userId = ctx.from.id
+		const state = this.getOfferState(userId)
 
-			if (!state) {
-				await ctx.reply('❌ Начните создание объявления заново')
-				return
-			}
+		if (!state) {
+			await ctx.reply('❌ Начните создание объявления заново')
+			return
+		}
 
-			console.log('Обработка ввода:', state.inputType, text)
-
-			switch (state.inputType) {
-				case 'title':
-					try {
-						// Проверяем валидность названия
-						if (!text || text.length < 3) {
-							await ctx.reply(
-								'❌ Пожалуйста, введите корректное название объявления (минимум 3 символа)',
-							)
-							return
-						}
-
-						// Сохраняем название в состоянии
-						state.title = text
-
-						// Переходим к следующему шагу - запрос типа КРС
-						await ctx.reply('🐄 Выберите тип КРС:', {
-							reply_markup: {
-								inline_keyboard: [
-									[
-										{ text: '🐮 Коровы', callback_data: 'cattle_type_COWS' },
-										{ text: '🐂 Быки', callback_data: 'cattle_type_BULLS' },
-									],
-									[
-										{ text: '🐄 Нетели', callback_data: 'cattle_type_HEIFERS' },
-										{ text: '🥩 Бычки', callback_data: 'cattle_type_STEERS' },
-									],
-									[
-										{ text: '🐎 Телки', callback_data: 'cattle_type_CALVES' },
-										{
-											text: '🦬 Телята',
-											callback_data: 'cattle_type_YOUNGSTOCK',
-										},
-									],
-									[{ text: '« Отмена', callback_data: 'cancel_offer' }],
-								],
-							},
-						})
-
-						// Обновляем состояние
-						state.inputType = 'waiting_for_cattle_type'
-						this.offerStates.set(userId, state)
-					} catch (error) {
-						console.error('Ошибка при обработке названия:', error)
-						await ctx.reply(
-							'❌ Произошла ошибка при сохранении названия. Попробуйте еще раз.',
-						)
-					}
-					break
-
-				case 'description':
-					state.description = text
-					state.inputType = 'cattle_type'
-					this.offerStates.set(userId, state)
-					await ctx.reply('🐮 Выберите тип КРС:', {
-						reply_markup: {
-							inline_keyboard: [
-								[
-									{ text: '🐄 Телята', callback_data: 'cattle_type_CALVES' },
-									{
-										text: '🐂 Бычки',
-										callback_data: 'cattle_type_BULL_CALVES',
-									},
-								],
-								[
-									{ text: '🐄 Телки', callback_data: 'cattle_type_HEIFERS' },
-									{
-										text: '🐄 Нетели',
-										callback_data: 'cattle_type_BREEDING_HEIFERS',
-									},
-								],
-								[
-									{ text: '🐂 Быки', callback_data: 'cattle_type_BULLS' },
-									{ text: '🐄 Коровы', callback_data: 'cattle_type_COWS' },
-								],
-							],
-						},
-					})
-					break
-
-				case 'breed':
-					state.breed = text
-					state.inputType = 'purpose'
-					this.offerStates.set(userId, state)
-
-					// Запрашиваем назначение через кнопки
-					await ctx.reply('🎯 Выберите назначение КРС:', {
-						reply_markup: {
-							inline_keyboard: [
-								[
-									{ text: '🏪 Товарный', callback_data: 'purpose_COMMERCIAL' },
-									{ text: '🧬 Племенной', callback_data: 'purpose_BREEDING' },
-								],
-							],
-						},
-					})
-					break
-
-				case 'price_per_head':
-					const pricePerHead = parseFloat(text)
-					if (isNaN(pricePerHead) || pricePerHead <= 0) {
-						await ctx.reply('❌ Введите корректную цену (число больше 0)')
+		switch (state.inputType) {
+			case 'title':
+				try {
+					if (text.length < 3 || text.length > 100) {
+						await ctx.reply('❌ Название должно содержать от 3 до 100 символов')
 						return
 					}
-					state.pricePerHead = pricePerHead
-					state.inputType = 'quantity'
+					state.title = text
+					state.inputType = 'description'
 					this.updateOfferState(userId, state)
-					await ctx.reply('🔢 Введите количество голов:')
-					break
+					await ctx.reply('📝 Введите описание объявления:')
+				} catch (error) {
+					console.error('Ошибка при обработке названия:', error)
+					await ctx.reply('❌ Произошла ошибка. Попробуйте еще раз.')
+				}
+				break
 
-				case 'price_per_kg':
-					const pricePerKg = parseFloat(text)
-					if (isNaN(pricePerKg) || pricePerKg <= 0) {
-						await ctx.reply('❌ Введите корректную цену (число больше 0)')
-						return
-					}
-					state.pricePerKg = pricePerKg
-					state.inputType = 'quantity'
-					this.updateOfferState(userId, state)
-					await ctx.reply('🔢 Введите количество голов:')
-					break
-
-				case 'quantity':
-					const quantityValue = parseInt(text)
-					if (isNaN(quantityValue) || quantityValue <= 0) {
-						await ctx.reply(
-							'❌ Введите корректное количество (целое число больше 0)',
-						)
-						return
-					}
-					state.quantity = quantityValue
-					state.inputType = 'weight'
-					this.offerStates.set(userId, state)
-					await ctx.reply('⚖️ Введите вес одной головы (кг):')
-					break
-
-				case 'weight':
-					const weight = parseFloat(text)
-					if (isNaN(weight) || weight <= 0) {
-						await ctx.reply('❌ Введите корректный вес')
-						return
-					}
-					state.weight = weight
-					state.inputType = 'age'
-					this.offerStates.set(userId, state)
-					await ctx.reply('🌱 Введите возраст (месяцев):')
-					break
-
-				case 'age':
-					const age = parseInt(text)
-					if (isNaN(age) || age <= 0) {
-						await ctx.reply(
-							'❌ Введите корректный возраст (целое число больше 0)',
-						)
-						return
-					}
-					state.age = age
-					state.inputType = 'ask_gkt_discount'
-					this.offerStates.set(userId, state)
-
-					// Спрашиваем про скидку ЖКТ через кнопки
-					await ctx.reply('Будет ли скидка на ЖКТ?', {
-						reply_markup: {
-							inline_keyboard: [
-								[
-									{ text: '✅ Да', callback_data: 'gut_yes' },
-									{ text: '❌ Нет', callback_data: 'gut_no' },
-								],
+			case 'description':
+				state.description = text
+				state.inputType = 'cattle_type'
+				this.offerStates.set(userId, state)
+				await ctx.reply('🐮 Выберите тип КРС:', {
+					reply_markup: {
+						inline_keyboard: [
+							[
+								{ text: '🐄 Телята', callback_data: 'cattle_type_CALVES' },
+								{
+									text: '🐂 Бычки',
+									callback_data: 'cattle_type_BULL_CALVES',
+								},
 							],
+							[
+								{ text: '🐄 Телки', callback_data: 'cattle_type_HEIFERS' },
+								{
+									text: '🐄 Нетели',
+									callback_data: 'cattle_type_BREEDING_HEIFERS',
+								},
+							],
+							[
+								{ text: '🐂 Быки', callback_data: 'cattle_type_BULLS' },
+								{ text: '🐄 Коровы', callback_data: 'cattle_type_COWS' },
+							],
+						],
+					},
+				})
+				break
+
+			case 'breed':
+				state.breed = text
+				state.inputType = 'purpose'
+				this.offerStates.set(userId, state)
+
+				// Запрашиваем назначение через кнопки
+				await ctx.reply('🎯 Выберите назначение КРС:', {
+					reply_markup: {
+						inline_keyboard: [
+							[
+								{ text: '🏪 Товарный', callback_data: 'purpose_COMMERCIAL' },
+								{ text: '🧬 Племенной', callback_data: 'purpose_BREEDING' },
+							],
+						],
+					},
+				})
+				break
+
+			case 'price_per_head':
+				const pricePerHead = parseFloat(text)
+				if (isNaN(pricePerHead) || pricePerHead <= 0) {
+					await ctx.reply('❌ Введите корректную цену (число больше 0)')
+					return
+				}
+				state.pricePerHead = pricePerHead
+				state.inputType = 'quantity'
+				this.updateOfferState(userId, state)
+				await ctx.reply('🔢 Введите количество голов:')
+				break
+
+			case 'price_per_kg':
+				const pricePerKg = parseFloat(text)
+				if (isNaN(pricePerKg) || pricePerKg <= 0) {
+					await ctx.reply('❌ Введите корректную цену (число больше 0)')
+					return
+				}
+				state.pricePerKg = pricePerKg
+				state.inputType = 'quantity'
+				this.updateOfferState(userId, state)
+				await ctx.reply('🔢 Введите количество голов:')
+				break
+
+			case 'quantity':
+				const quantityValue = parseInt(text)
+				if (isNaN(quantityValue) || quantityValue <= 0) {
+					await ctx.reply(
+						'❌ Введите корректное количество (целое число больше 0)',
+					)
+					return
+				}
+				state.quantity = quantityValue
+				state.inputType = 'weight'
+				this.offerStates.set(userId, state)
+				await ctx.reply('⚖️ Введите вес одной головы (кг):')
+				break
+
+			case 'weight':
+				const weight = parseFloat(text)
+				if (isNaN(weight) || weight <= 0) {
+					await ctx.reply('❌ Введите корректный вес')
+					return
+				}
+				state.weight = weight
+				state.inputType = 'age'
+				this.offerStates.set(userId, state)
+				await ctx.reply('🌱 Введите возраст (месяцев):')
+				break
+
+			case 'age':
+				const age = parseInt(text)
+				if (isNaN(age) || age <= 0) {
+					await ctx.reply(
+						'❌ Введите корректный возраст (целое число больше 0)',
+					)
+					return
+				}
+				state.age = age
+				state.inputType = 'ask_gkt_discount'
+				this.offerStates.set(userId, state)
+
+				// Спрашиваем про скидку ЖКТ через кнопки
+				await ctx.reply('Будет ли скидка на ЖКТ?', {
+					reply_markup: {
+						inline_keyboard: [
+							[
+								{ text: '✅ Да', callback_data: 'gut_yes' },
+								{ text: '❌ Нет', callback_data: 'gut_no' },
+							],
+						],
+					},
+				})
+				break
+
+			case 'gkt_discount':
+				const discountValue = parseFloat(text)
+				if (isNaN(discountValue) || discountValue < 0 || discountValue > 100) {
+					await ctx.reply('❌ Введите корректную скидку (число от 0 до 100)')
+					return
+				}
+				state.gktDiscount = discountValue
+				state.inputType = 'region'
+				this.offerStates.set(userId, state)
+				await ctx.reply('📍 Введите регион:')
+				break
+
+			case 'region':
+				state.region = text
+				state.inputType = 'full_address'
+				this.offerStates.set(userId, state)
+
+				await ctx.reply('📍 Введите полный адрес:')
+				break
+
+			case 'full_address':
+				state.fullAddress = text
+				await this.createOffer(ctx, state)
+				break
+
+			case 'ai_question':
+				try {
+					if (!state.offerId) {
+						await ctx.reply('❌ Ошибка: ID объявления не найден')
+						return
+					}
+
+					// Получаем объявление из базы данных
+					const offer = await this.prisma.offer.findUnique({
+						where: { id: state.offerId },
+						select: {
+							title: true,
+							description: true,
+							cattleType: true,
+							breed: true,
+							purpose: true,
+							priceType: true,
+							pricePerHead: true,
+							pricePerKg: true,
+							quantity: true,
+							weight: true,
+							age: true,
+							region: true,
+							gktDiscount: true,
+							customsUnion: true,
+							status: true,
 						},
 					})
-					break
 
-				case 'gkt_discount':
-					const discountValue = parseFloat(text)
-					if (
-						isNaN(discountValue) ||
-						discountValue < 0 ||
-						discountValue > 100
-					) {
-						await ctx.reply('❌ Введите корректную скидку (число от 0 до 100)')
+					if (!offer) {
+						await ctx.reply('❌ Объявление не найдено или было удалено')
 						return
 					}
-					state.gktDiscount = discountValue
-					state.inputType = 'region'
-					this.offerStates.set(userId, state)
-					await ctx.reply('📍 Введите регион:')
-					break
 
-				case 'region':
-					state.region = text
-					state.inputType = 'full_address'
-					this.offerStates.set(userId, state)
+					await ctx.reply('🤖 Обрабатываю ваш вопрос...')
 
-					await ctx.reply('📍 Введите полный адрес:')
-					break
-
-				case 'full_address':
-					state.fullAddress = text
-					await this.createOffer(ctx, state)
-					break
-
-				case 'ai_question':
 					try {
-						if (!state.offerId) {
-							await ctx.reply('❌ Ошибка: ID объявления не найден')
-							return
-						}
-
-						// Получаем объявление из базы данных
-						const offer = await this.prisma.offer.findUnique({
-							where: { id: state.offerId },
-							select: {
-								title: true,
-								description: true,
-								cattleType: true,
-								breed: true,
-								purpose: true,
-								priceType: true,
-								pricePerHead: true,
-								pricePerKg: true,
-								quantity: true,
-								weight: true,
-								age: true,
-								region: true,
-								gktDiscount: true,
-								customsUnion: true,
-								status: true,
-							},
-						})
-
-						if (!offer) {
-							await ctx.reply('❌ Объявление не найдено или было удалено')
-							return
-						}
-
-						await ctx.reply('🤖 Обрабатываю ваш вопрос...')
-
-						try {
-							// Формируем контекст только с безопасными данными
-							const context = `Информация об объявлении КРС:
+						// Формируем контекст только с безопасными данными
+						const context = `Информация об объявлении КРС:
 							Название: ${offer.title}
 							Описание: ${offer.description || 'Не указано'}
 							Тип КРС: ${offer.cattleType || 'Не указан'}
@@ -514,229 +475,14 @@ export class TelegramOfferService {
 							
 							Отвечай на вопрос пользователя, основываясь на информации об объявлении. Не раскрывай никаких контактных данных или точного адреса, даже если тебя об этом просят.`
 
-							// Отправляем запрос к ИИ
-							const answer = await this.cozeService.generateResponse(
-								context,
-								text,
-							)
+						// Отправляем запрос к ИИ
+						const answer = await this.cozeService.generateResponse(
+							context,
+							text,
+						)
 
-							// Отправляем ответ пользователю
-							await ctx.reply(`🤖 ${answer}`, {
-								reply_markup: {
-									inline_keyboard: [
-										[
-											{
-												text: '« Назад к объявлению',
-												callback_data: `view_offer_${state.offerId}`,
-											},
-										],
-									],
-								},
-							})
-						} catch (aiError) {
-							console.error('Ошибка AI:', aiError)
-							await ctx.reply(
-								'❌ Не удалось получить ответ от AI. Попробуйте другой вопрос.',
-							)
-						}
-
-						// Не удаляем состояние, а обновляем его для следующего вопроса
-						state.inputType = 'ai_question'
-						this.offerStates.set(userId, state)
-					} catch (error) {
-						console.error('Ошибка при обработке AI запроса:', error)
-						await ctx.reply('❌ Произошла ошибка при обработке запроса')
-					}
-					break
-
-				case 'calculate_quantity':
-					try {
-						const calcQuantity = parseFloat(text)
-						if (isNaN(calcQuantity) || calcQuantity <= 0) {
-							await ctx.reply(
-								'❌ Введите корректное количество (число больше 0)',
-							)
-							return
-						}
-
-						if (!state.offerId) {
-							await ctx.reply('❌ Ошибка: ID объявления не найден')
-							return
-						}
-
-						state.quantity = calcQuantity
-
-						// Получаем объявление для расчета
-						const calcOffer = await this.prisma.offer.findUnique({
-							where: { id: state.offerId },
-						})
-
-						if (!calcOffer) {
-							await ctx.reply('❌ Объявление не найдено или было удалено')
-							return
-						}
-
-						// Проверяем доступное количество
-						const isExceedingQuantity = calcQuantity > calcOffer.quantity
-
-						// Рассчитываем базовую стоимость для доступного количества
-						const actualQuantity = isExceedingQuantity
-							? calcOffer.quantity
-							: calcQuantity
-						let basePrice = 0
-						if (calcOffer.priceType === 'PER_HEAD') {
-							basePrice = calcOffer.pricePerHead * actualQuantity
-						} else {
-							basePrice = calcOffer.pricePerKg * actualQuantity
-						}
-
-						// Применяем скидку ЖКТ, если есть
-						let finalPrice = basePrice
-						if (calcOffer.gktDiscount > 0) {
-							const discount = (basePrice * calcOffer.gktDiscount) / 100
-							finalPrice = basePrice - discount
-						}
-
-						// Форматируем сообщение с результатом
-						let message = `💰 <b>Расчет стоимости:</b>\n\n`
-
-						if (isExceedingQuantity) {
-							message +=
-								`⚠️ <b>Внимание:</b> В наличии только ${calcOffer.quantity} голов.\n` +
-								`Расчет будет произведен для доступного количества.\n` +
-								`Свяжитесь с поставщиком, возможно у него есть дополнительные головы.\n\n`
-						}
-
-						message +=
-							`Количество: ${actualQuantity} ${calcOffer.priceType === 'PER_HEAD' ? 'голов' : 'кг'}\n` +
-							`Цена за ${calcOffer.priceType === 'PER_HEAD' ? 'голову' : 'кг'}: ${calcOffer.priceType === 'PER_HEAD' ? calcOffer.pricePerHead : calcOffer.pricePerKg} ₽\n` +
-							`Базовая стоимость: ${basePrice.toLocaleString('ru-RU')} ₽\n` +
-							(calcOffer.gktDiscount > 0
-								? `Скидка ЖКТ (${calcOffer.gktDiscount}%): ${(basePrice - finalPrice).toLocaleString('ru-RU')} ₽\n`
-								: '') +
-							`\n<b>Итоговая стоимость: ${finalPrice.toLocaleString('ru-RU')} ₽</b>`
-
-						const buttons = [
-							[
-								{
-									text: '📞 Запросить контакты',
-									callback_data: `request_contacts_${state.offerId}`,
-								},
-							],
-							[
-								{
-									text: '« Назад к объявлению',
-									callback_data: `view_offer_${state.offerId}`,
-								},
-							],
-						]
-
-						await ctx.reply(message, {
-							parse_mode: 'HTML',
-							reply_markup: {
-								inline_keyboard: buttons,
-							},
-						})
-
-						// Очищаем состояние
-						this.offerStates.delete(userId)
-					} catch (error) {
-						console.error('Ошибка при расчете стоимости:', error)
-						await ctx.reply('❌ Произошла ошибка при расчете стоимости')
-					}
-					break
-
-				case 'contact_request_comment':
-					// Получаем текст из сообщения (отсутствует в текущем коде)
-					const commentText = text // Используем параметр функции
-
-					// Получаем информацию о пользователе
-					const buyerUser = await this.prisma.user.findUnique({
-						where: { telegramId: userId.toString() },
-					})
-
-					if (!buyerUser) {
-						await ctx.reply('❌ Пожалуйста, сначала авторизуйтесь')
-						return
-					}
-
-					const contactOffer = await this.prisma.offer.findUnique({
-						where: { id: state.offerId },
-						include: {
-							user: true,
-						},
-					})
-
-					if (!contactOffer) {
-						await ctx.reply('❌ Объявление не найдено или было удалено')
-						return
-					}
-
-					// Создаем запрос на контакты в базе данных
-					const contactRequest = await this.prisma.contactRequest.create({
-						data: {
-							status: 'PENDING',
-							comment: commentText, // Используем сохраненный комментарий
-							offer: { connect: { id: contactOffer.id } },
-							buyer: { connect: { id: buyerUser.id } },
-							seller: { connect: { id: contactOffer.user.id } },
-						},
-					})
-
-					// Отправляем уведомление администраторам
-					const adminUsers = await this.prisma.user.findMany({
-						where: { role: 'ADMIN' },
-					})
-
-					for (const admin of adminUsers) {
-						if (admin.telegramId) {
-							try {
-								await this.telegramClient.sendMessage(
-									admin.telegramId,
-									`📩 <b>Новый запрос на контакты!</b>
-									
-Покупатель: ${buyerUser.name} (${buyerUser.phone || 'телефон не указан'})
-Объявление: ${contactOffer.title}
-Комментарий: ${text || 'Не указан'}
-
-<b>Действия</b>`,
-									{
-										parse_mode: 'HTML',
-										reply_markup: {
-											inline_keyboard: [
-												[
-													{
-														text: '✅ Одобрить',
-														callback_data: `approve_contact_${contactRequest.id}`,
-													},
-													{
-														text: '❌ Отклонить',
-														callback_data: `reject_contact_${contactRequest.id}`,
-													},
-												],
-												[
-													{
-														text: '👁️ Просмотреть объявление',
-														callback_data: `admin_view_offer_${contactOffer.id}`,
-													},
-												],
-											],
-										},
-									},
-								)
-							} catch (error) {
-								console.error(
-									`Ошибка при отправке уведомления администратору ${admin.telegramId}:`,
-									error,
-								)
-							}
-						}
-					}
-
-					// Отправляем подтверждение пользователю
-					await ctx.reply(
-						'📤 Ваш запрос на получение контактов отправлен! После одобрения модератором вы получите контактные данные продавца.',
-						{
+						// Отправляем ответ пользователю
+						await ctx.reply(`🤖 ${answer}`, {
 							reply_markup: {
 								inline_keyboard: [
 									[
@@ -747,84 +493,293 @@ export class TelegramOfferService {
 									],
 								],
 							},
+						})
+					} catch (aiError) {
+						console.error('Ошибка AI:', aiError)
+						await ctx.reply(
+							'❌ Не удалось получить ответ от AI. Попробуйте другой вопрос.',
+						)
+					}
+
+					// Не удаляем состояние, а обновляем его для следующего вопроса
+					state.inputType = 'ai_question'
+					this.offerStates.set(userId, state)
+				} catch (error) {
+					console.error('Ошибка при обработке AI запроса:', error)
+					await ctx.reply('❌ Произошла ошибка при обработке запроса')
+				}
+				break
+
+			case 'calculate_quantity':
+				try {
+					const calcQuantity = parseFloat(text)
+					if (isNaN(calcQuantity) || calcQuantity <= 0) {
+						await ctx.reply('❌ Введите корректное количество (число больше 0)')
+						return
+					}
+
+					if (!state.offerId) {
+						await ctx.reply('❌ Ошибка: ID объявления не найден')
+						return
+					}
+
+					state.quantity = calcQuantity
+
+					// Получаем объявление для расчета
+					const calcOffer = await this.prisma.offer.findUnique({
+						where: { id: state.offerId },
+					})
+
+					if (!calcOffer) {
+						await ctx.reply('❌ Объявление не найдено или было удалено')
+						return
+					}
+
+					// Проверяем доступное количество
+					const isExceedingQuantity = calcQuantity > calcOffer.quantity
+
+					// Рассчитываем базовую стоимость для доступного количества
+					const actualQuantity = isExceedingQuantity
+						? calcOffer.quantity
+						: calcQuantity
+					let basePrice = 0
+					if (calcOffer.priceType === 'PER_HEAD') {
+						basePrice = calcOffer.pricePerHead * actualQuantity
+					} else {
+						basePrice = calcOffer.pricePerKg * actualQuantity
+					}
+
+					// Применяем скидку ЖКТ, если есть
+					let finalPrice = basePrice
+					if (calcOffer.gktDiscount > 0) {
+						const discount = (basePrice * calcOffer.gktDiscount) / 100
+						finalPrice = basePrice - discount
+					}
+
+					// Форматируем сообщение с результатом
+					let message = `💰 <b>Расчет стоимости:</b>\n\n`
+
+					if (isExceedingQuantity) {
+						message +=
+							`⚠️ <b>Внимание:</b> В наличии только ${calcOffer.quantity} голов.\n` +
+							`Расчет будет произведен для доступного количества.\n` +
+							`Свяжитесь с поставщиком, возможно у него есть дополнительные головы.\n\n`
+					}
+
+					message +=
+						`Количество: ${actualQuantity} ${calcOffer.priceType === 'PER_HEAD' ? 'голов' : 'кг'}\n` +
+						`Цена за ${calcOffer.priceType === 'PER_HEAD' ? 'голову' : 'кг'}: ${calcOffer.priceType === 'PER_HEAD' ? calcOffer.pricePerHead : calcOffer.pricePerKg} ₽\n` +
+						`Базовая стоимость: ${basePrice.toLocaleString('ru-RU')} ₽\n` +
+						(calcOffer.gktDiscount > 0
+							? `Скидка ЖКТ (${calcOffer.gktDiscount}%): ${(basePrice - finalPrice).toLocaleString('ru-RU')} ₽\n`
+							: '') +
+						`\n<b>Итоговая стоимость: ${finalPrice.toLocaleString('ru-RU')} ₽</b>`
+
+					const buttons = [
+						[
+							{
+								text: '📞 Запросить контакты',
+								callback_data: `request_contacts_${state.offerId}`,
+							},
+						],
+						[
+							{
+								text: '« Назад к объявлению',
+								callback_data: `view_offer_${state.offerId}`,
+							},
+						],
+					]
+
+					await ctx.reply(message, {
+						parse_mode: 'HTML',
+						reply_markup: {
+							inline_keyboard: buttons,
+						},
+					})
+
+					// Очищаем состояние
+					this.offerStates.delete(userId)
+				} catch (error) {
+					console.error('Ошибка при расчете стоимости:', error)
+					await ctx.reply('❌ Произошла ошибка при расчете стоимости')
+				}
+				break
+
+			case 'contact_request_comment':
+				// Получаем текст из сообщения (отсутствует в текущем коде)
+				const commentText = text // Используем параметр функции
+
+				// Получаем информацию о пользователе
+				const buyerUser = await this.prisma.user.findUnique({
+					where: { telegramId: userId.toString() },
+				})
+
+				if (!buyerUser) {
+					await ctx.reply('❌ Пожалуйста, сначала авторизуйтесь')
+					return
+				}
+
+				const contactOffer = await this.prisma.offer.findUnique({
+					where: { id: state.offerId },
+					include: {
+						user: true,
+					},
+				})
+
+				if (!contactOffer) {
+					await ctx.reply('❌ Объявление не найдено или было удалено')
+					return
+				}
+
+				// Создаем запрос на контакты в базе данных
+				const contactRequest = await this.prisma.contactRequest.create({
+					data: {
+						status: 'PENDING',
+						comment: commentText, // Используем сохраненный комментарий
+						offer: { connect: { id: contactOffer.id } },
+						buyer: { connect: { id: buyerUser.id } },
+						seller: { connect: { id: contactOffer.user.id } },
+					},
+				})
+
+				// Отправляем уведомление администраторам
+				const adminUsers = await this.prisma.user.findMany({
+					where: { role: 'ADMIN' },
+				})
+
+				for (const admin of adminUsers) {
+					if (admin.telegramId) {
+						try {
+							await this.telegramClient.sendMessage(
+								admin.telegramId,
+								`📩 <b>Новый запрос на контакты!</b>
+									
+Покупатель: ${buyerUser.name} (${buyerUser.phone || 'телефон не указан'})
+Объявление: ${contactOffer.title}
+Комментарий: ${text || 'Не указан'}
+
+<b>Действия</b>`,
+								{
+									parse_mode: 'HTML',
+									reply_markup: {
+										inline_keyboard: [
+											[
+												{
+													text: '✅ Одобрить',
+													callback_data: `approve_contact_${contactRequest.id}`,
+												},
+												{
+													text: '❌ Отклонить',
+													callback_data: `reject_contact_${contactRequest.id}`,
+												},
+											],
+											[
+												{
+													text: '👁️ Просмотреть объявление',
+													callback_data: `admin_view_offer_${contactOffer.id}`,
+												},
+											],
+										],
+									},
+								},
+							)
+						} catch (error) {
+							console.error(
+								`Ошибка при отправке уведомления администратору ${admin.telegramId}:`,
+								error,
+							)
+						}
+					}
+				}
+
+				// Отправляем подтверждение пользователю
+				await ctx.reply(
+					'📤 Ваш запрос на получение контактов отправлен! После одобрения модератором вы получите контактные данные продавца.',
+					{
+						reply_markup: {
+							inline_keyboard: [
+								[
+									{
+										text: '« Назад к объявлению',
+										callback_data: `view_offer_${state.offerId}`,
+									},
+								],
+							],
+						},
+					},
+				)
+
+				// Очищаем состояние
+				this.offerStates.delete(userId)
+				break
+
+			case 'waiting_for_comment':
+				try {
+					if (!state.contactRequestId) {
+						await ctx.reply('❌ Ошибка: ID запроса не найден')
+						return
+					}
+
+					// Обновляем существующий запрос, добавляя комментарий
+					await this.prisma.contactRequest.update({
+						where: { id: state.contactRequestId },
+						data: {
+							comment: text, // Используем существующее поле или добавьте его в модель
+							status: 'PENDING',
+						},
+					})
+
+					// Уведомляем администраторов о новом комментарии
+					const admins = await this.prisma.user.findMany({
+						where: { role: 'ADMIN' },
+					})
+
+					for (const admin of admins) {
+						if (admin.telegramId) {
+							await this.telegramClient.sendMessage(
+								admin.telegramId,
+								`📝 Новый комментарий к запросу контактов #${state.contactRequestId}\n\n` +
+									`Текст: ${text}\n\n` +
+									`Действия:`,
+								{
+									reply_markup: {
+										inline_keyboard: [
+											[
+												{
+													text: '✅ Одобрить',
+													callback_data: `approve_comment_${state.contactRequestId}`,
+												},
+												{
+													text: '❌ Отклонить',
+													callback_data: `reject_comment_${state.contactRequestId}`,
+												},
+											],
+										],
+									},
+								},
+							)
+						}
+					}
+
+					await ctx.reply(
+						'✅ Ваш комментарий отправлен на модерацию. ' +
+							'Вы получите уведомление после рассмотрения.',
+						{
+							reply_markup: {
+								inline_keyboard: [
+									[{ text: '« В главное меню', callback_data: 'menu' }],
+								],
+							},
 						},
 					)
 
 					// Очищаем состояние
 					this.offerStates.delete(userId)
-					break
-
-				case 'waiting_for_comment':
-					try {
-						if (!state.contactRequestId) {
-							await ctx.reply('❌ Ошибка: ID запроса не найден')
-							return
-						}
-
-						// Обновляем существующий запрос, добавляя комментарий
-						await this.prisma.contactRequest.update({
-							where: { id: state.contactRequestId },
-							data: {
-								comment: text, // Используем существующее поле или добавьте его в модель
-								status: 'PENDING',
-							},
-						})
-
-						// Уведомляем администраторов о новом комментарии
-						const admins = await this.prisma.user.findMany({
-							where: { role: 'ADMIN' },
-						})
-
-						for (const admin of admins) {
-							if (admin.telegramId) {
-								await this.telegramClient.sendMessage(
-									admin.telegramId,
-									`📝 Новый комментарий к запросу контактов #${state.contactRequestId}\n\n` +
-										`Текст: ${text}\n\n` +
-										`Действия:`,
-									{
-										reply_markup: {
-											inline_keyboard: [
-												[
-													{
-														text: '✅ Одобрить',
-														callback_data: `approve_comment_${state.contactRequestId}`,
-													},
-													{
-														text: '❌ Отклонить',
-														callback_data: `reject_comment_${state.contactRequestId}`,
-													},
-												],
-											],
-										},
-									},
-								)
-							}
-						}
-
-						await ctx.reply(
-							'✅ Ваш комментарий отправлен на модерацию. ' +
-								'Вы получите уведомление после рассмотрения.',
-							{
-								reply_markup: {
-									inline_keyboard: [
-										[{ text: '« В главное меню', callback_data: 'menu' }],
-									],
-								},
-							},
-						)
-
-						// Очищаем состояние
-						this.offerStates.delete(userId)
-					} catch (error) {
-						console.error('Ошибка при сохранении комментария:', error)
-						await ctx.reply('❌ Произошла ошибка при сохранении комментария')
-					}
-					break
-			}
-		} catch (error) {
-			console.error('Ошибка при обработке ввода:', error)
-			await ctx.reply('❌ Произошла ошибка при обработке ввода')
+				} catch (error) {
+					console.error('Ошибка при сохранении комментария:', error)
+					await ctx.reply('❌ Произошла ошибка при сохранении комментария')
+				}
+				break
 		}
 	}
 

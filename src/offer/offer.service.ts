@@ -1,4 +1,8 @@
-import { Injectable } from '@nestjs/common'
+import {
+	Injectable,
+	InternalServerErrorException,
+	NotFoundException,
+} from '@nestjs/common'
 import { S3Service } from '../common/services/s3.service'
 import { PrismaService } from '../prisma.service'
 import { TelegramClient } from '../telegram/telegram.client'
@@ -400,19 +404,96 @@ export class OfferService {
 	}
 
 	async findOne(id: string) {
-		return this.prisma.offer.findUnique({
-			where: { id },
-			include: {
-				images: true,
-				user: {
-					select: {
-						id: true,
-						name: true,
-						email: true,
+		try {
+			const offer = await this.prisma.offer.findUnique({
+				where: { id },
+				include: {
+					images: true,
+					user: {
+						select: {
+							id: true,
+							name: true,
+							role: true,
+							mercuryNumber: true,
+						},
 					},
 				},
-			},
-		})
+			})
+
+			if (!offer) {
+				throw new NotFoundException('Объявление не найдено')
+			}
+
+			// Удаляем конфиденциальную информацию
+			const { fullAddress, contactPhone, contactPerson, ...safeOfferData } =
+				offer
+
+			return {
+				...safeOfferData,
+				fullAddress: undefined, // Явно устанавливаем как undefined
+				contactPhone: undefined,
+				contactPerson: undefined,
+			}
+		} catch (error) {
+			if (error instanceof NotFoundException) {
+				throw error
+			}
+			throw new InternalServerErrorException('Ошибка при получении объявления')
+		}
+	}
+
+	async requestContacts(offerId: string, userId: string, message: string) {
+		try {
+			const offer = await this.prisma.offer.findUnique({
+				where: { id: offerId },
+				include: {
+					user: true,
+				},
+			})
+
+			if (!offer) {
+				throw new NotFoundException('Объявление не найдено')
+			}
+
+			// Создаем запрос на контакты
+			const contactRequest = await this.prisma.contactRequest.create({
+				data: {
+					comment: message,
+					status: 'PENDING', // Добавляем статус
+					offer: {
+						connect: {
+							id: offerId,
+						},
+					},
+					buyer: {
+						connect: {
+							id: userId,
+						},
+					},
+					seller: {
+						connect: {
+							id: offer.userId,
+						},
+					},
+				},
+			})
+
+			// Отправляем уведомление продавцу в Telegram
+			if (offer.user.telegramId) {
+				await this.telegramClient.sendMessage(
+					offer.user.telegramId,
+					`🔔 Новый запрос контактов!\n\nОбъявление: ${offer.title}\nСообщение: ${message}\n\nПроверьте запрос в личном кабинете.`,
+				)
+			}
+
+			return {
+				success: true,
+				message: '🎊 Запрос успешно отправлен! Ожидайте ответа от продавца.',
+			}
+		} catch (error) {
+			console.error('Ошибка при отправке запроса контактов:', error)
+			throw new InternalServerErrorException('Ошибка при отправке запроса')
+		}
 	}
 
 	async update(

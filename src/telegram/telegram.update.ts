@@ -280,27 +280,35 @@ export class TelegramUpdate {
 			const userId = ctx.from.id
 			const text = (ctx.message as any).text
 
-			// Проверяем, обработано ли сообщение как часть процесса входа
-			const isHandledByAuth = await this.telegramService.handleTextMessage(ctx)
-			if (isHandledByAuth) {
+			// Проверяем состояние создания объявления
+			const offerState = this.offerService.getOfferState(userId)
+			if (offerState) {
+				await this.offerService.handleOfferInput(ctx, text)
 				return
 			}
 
-			// Если сообщение не обработано как часть входа, проверяем другие состояния
+			// Проверяем состояние авторизации
+			const handled = await this.telegramService.handleTextMessage(ctx)
+			if (handled) {
+				return
+			}
+
+			// Проверяем состояние регистрации
 			const registrationState = this.authService.getRegistrationState(userId)
 			if (registrationState) {
 				await this.authService.handleTextInput(ctx, text)
 				return
 			}
 
-			// Если нет активных состояний, проверяем авторизацию
-			const isAuth = await this.checkAuth(ctx)
-			if (!isAuth) {
+			// Проверяем авторизацию пользователя
+			const isAuthorized = await this.checkAuth(ctx)
+			if (!isAuthorized) {
 				return
 			}
 
-			// Обработка обычных текстовых сообщений
-			await this.telegramService.handleTextInput(ctx)
+			// Если пользователь авторизован, но нет активных состояний -
+			// показываем главное меню
+			await this.handleMenu(ctx)
 		} catch (error) {
 			console.error('Ошибка при обработке сообщения:', error)
 			await ctx.reply('❌ Произошла ошибка при обработке сообщения')
